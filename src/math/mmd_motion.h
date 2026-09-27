@@ -6,9 +6,11 @@
 #include <cstdint>
 #include <cstring>
 #include <functional>
+#include <istream>
 #include <map>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace mmd {
@@ -17,28 +19,51 @@ inline float Clamp(float v, float a, float b) {
   return (std::max)(a, (std::min)(b, v));
 }
 struct Reader {
-  const std::vector<uint8_t> &bytes;
+  const uint8_t *data = nullptr;
+  size_t length = 0;
+  std::istream *stream = nullptr;
+  std::vector<uint8_t> buffer;
+  size_t cursor = 0, buffered = 0;
   size_t offset = 0;
-  explicit Reader(const std::vector<uint8_t> &b) : bytes(b) {}
-  size_t remaining() const { return bytes.size() - offset; }
+  explicit Reader(const std::vector<uint8_t> &b) : data(b.data()), length(b.size()) {}
+  Reader(std::istream &s, size_t size) : length(size), stream(&s), buffer(64 * 1024) {}
+  size_t remaining() const { return length - offset; }
   void require(size_t n) const {
     if (n > remaining())
       throw std::runtime_error("Truncated MMD file");
   }
-  void skip(size_t n) {
+  void copy(void *destination, size_t n) {
     require(n);
-    offset += n;
+    auto out = static_cast<uint8_t *>(destination);
+    if (!stream) {
+      if (out && n) std::memcpy(out, data + offset, n);
+      offset += n;
+      return;
+    }
+    while (n) {
+      if (cursor == buffered) {
+        buffered = (std::min)(remaining(), buffer.size());
+        if (!stream->read(reinterpret_cast<char *>(buffer.data()), buffered))
+          throw std::runtime_error("Cannot read MMD file (truncated or changed while loading)");
+        cursor = 0;
+      }
+      auto take = (std::min)(n, buffered - cursor);
+      if (out) { std::memcpy(out, buffer.data() + cursor, take); out += take; }
+      cursor += take; offset += take; n -= take;
+    }
   }
+  void skip(size_t n) { copy(nullptr, n); }
   template <class T> T read() {
-    require(sizeof(T));
     T v;
-    std::memcpy(&v, bytes.data() + offset, sizeof(T));
-    offset += sizeof(T);
+    copy(&v, sizeof(T));
     return v;
   }
   uint32_t count(size_t minSize, uint32_t limit = 2000000) {
     uint32_t n = read<uint32_t>();
-    if (n > limit || (minSize && n > remaining() / minSize))
+    if (n > limit)
+      throw std::runtime_error("MMD record count exceeds supported limit: " +
+                               std::to_string(n) + " > " + std::to_string(limit));
+    if (minSize && n > remaining() / minSize)
       throw std::runtime_error("Invalid MMD record count");
     return n;
   }
@@ -65,8 +90,8 @@ struct Reader {
   }
   std::string raw(size_t n) {
     require(n);
-    std::string s(reinterpret_cast<const char *>(bytes.data() + offset), n);
-    offset += n;
+    std::string s(n, '\0');
+    copy(s.data(), n);
     return s;
   }
   std::string fixed(size_t n, const Decoder &decode) {
@@ -154,8 +179,9 @@ struct MotionClip {
   bool empty() const { return bones.empty() && morphs.empty() && cameras.empty(); }
 };
 template <class T> inline void SortKeys(std::vector<T> &v) {
-  std::stable_sort(v.begin(), v.end(),
-                   [](const T &a, const T &b) { return a.frame < b.frame; });
+  auto less = [](const T &a, const T &b) { return a.frame < b.frame; };
+  if (!std::is_sorted(v.begin(), v.end(), less))
+    std::stable_sort(v.begin(), v.end(), less);
   size_t n = 0;
   for (const auto &k : v) {
     if (n && v[n - 1].frame == k.frame)
@@ -187,23 +213,46 @@ inline void Recount(MotionClip &c) {
   if (!c.cameras.empty())
     c.lastFrame = (std::max)(c.lastFrame, c.cameras.back().frame);
 }
-inline MotionClip ReadVmd(const std::vector<uint8_t> &bytes,
-                          const Decoder &decode) {
-  Reader r(bytes);
+// File size and decoded records have separate bounds. Stream large VMDs so the
+// raw file is never retained alongside all decoded tracks. PMX limits stay local
+// to its reader. Do not thin keys or discard unknown bones on import.
+constexpr size_t MaxVmdFileBytes = size_t(1024) * 1024 * 1024;
+constexpr size_t MaxVmdKeyBytes = size_t(512) * 1024 * 1024;
+inline MotionClip ReadVmd(Reader &r, const Decoder &decode) {
+  if (r.remaining() > MaxVmdFileBytes) throw std::runtime_error("VMD exceeds 1 GiB");
   MotionClip c;
+  size_t keyBytes = 0;
+  auto records = [&](size_t wireSize, size_t keySize, uint32_t limit = 8000000) {
+    const auto n = r.count(wireSize, limit);
+    if (keySize && n > (MaxVmdKeyBytes - keyBytes) / keySize)
+      throw std::runtime_error("VMD decoded keyframes exceed 512 MiB; previous motion retained");
+    keyBytes += size_t(n) * keySize;
+    return n;
+  };
+  // Dense, baked motions repeat a few hundred CP932 names millions of times.
+  std::unordered_map<std::string, std::string> names;
+  auto trackName = [&](size_t width) -> const std::string & {
+    auto raw = r.raw(width);auto zero = raw.find('\0');
+    if (zero != raw.npos) raw.resize(zero);
+    auto it = names.find(raw);
+    if (it != names.end()) return it->second;
+    if (names.size() >= 16384) throw std::runtime_error("VMD exceeds 16384 track names");
+    auto name = Name(decode(raw, 932));
+    return names.emplace(std::move(raw), std::move(name)).first->second;
+  };
   auto signature = r.raw(30);
   bool old = signature.rfind("Vocaloid Motion Data file", 0) == 0;
   if (signature.compare(0, 25, "Vocaloid Motion Data 0002") != 0 && !old)
     throw std::runtime_error("Not a VMD 0002/file motion");
   c.model = r.fixed(old ? 10 : 20, decode);
-  auto n = r.count(111);
+  auto n = records(111, sizeof(BoneKey));
   for (uint32_t i = 0; i < n; i++) {
-    auto name = Name(r.fixed(15, decode));
+    const auto &name = trackName(15);
     BoneKey k;
     k.frame = r.read<uint32_t>();
     k.position = r.vec();
     k.rotation = r.quat();
-    auto curve = r.raw(64);
+    uint8_t curve[64];r.copy(curve, sizeof(curve));
     for (int j = 0; j < 4; j++)
       k.curves[j] = {Clamp(uint8_t(curve[j]) / 127.f, 0, 1),
                      Clamp(uint8_t(curve[j + 4]) / 127.f, 0, 1),
@@ -213,9 +262,9 @@ inline MotionClip ReadVmd(const std::vector<uint8_t> &bytes,
       c.bones[name].push_back(k);
   }
   if (r.remaining()) {
-    n = r.count(23);
+    n = records(23, sizeof(MorphKey));
     for (uint32_t i = 0; i < n; i++) {
-      auto name = Name(r.fixed(15, decode));
+      const auto &name = trackName(15);
       MorphKey k;
       k.frame = r.read<uint32_t>();
       k.weight = Clamp(r.number(), 0, 1);
@@ -224,7 +273,7 @@ inline MotionClip ReadVmd(const std::vector<uint8_t> &bytes,
     }
   }
   if (r.remaining()) {
-    n = r.count(61);
+    n = records(61, sizeof(CameraKey), 2000000);
     c.cameras.reserve(n);
     for (uint32_t i = 0; i < n; ++i) {
       CameraKey k;
@@ -264,9 +313,9 @@ inline MotionClip ReadVmd(const std::vector<uint8_t> &bytes,
     for (uint32_t i = 0; i < n; i++) {
       uint32_t f = r.read<uint32_t>();
       r.read<uint8_t>();
-      auto m = r.count(21, 10000);
+      auto m = records(21, sizeof(IkKey), 10000);
       for (uint32_t j = 0; j < m; j++) {
-        auto name = Name(r.fixed(20, decode));
+        const auto &name = trackName(20);
         bool on = r.read<uint8_t>() != 0;
         c.ik[name].push_back({f, on});
       }
@@ -276,6 +325,11 @@ inline MotionClip ReadVmd(const std::vector<uint8_t> &bytes,
     c.warnings.push_back("Trailing VMD extension ignored");
   Recount(c);
   return c;
+}
+inline MotionClip ReadVmd(const std::vector<uint8_t> &bytes, const Decoder &decode) {
+  if (bytes.size() > MaxVmdFileBytes) throw std::runtime_error("VMD exceeds 1 GiB");
+  Reader reader(bytes);
+  return ReadVmd(reader, decode);
 }
 template <class K>
 inline size_t Upper(const std::vector<K> &keys, double frame) {

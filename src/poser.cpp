@@ -24,6 +24,7 @@
 #include "editor/panel_library.h"
 #include "editor/panel_morph.h"
 #include "editor/panel_mmd.h"
+#include "editor/panel_mmd_squad.h"
 #include "editor/panel_agreement.h"
 #include "config.h"
 #include "game/cloth_init.h"
@@ -266,7 +267,7 @@ static void GameFrameTickBody() {
     // 游戏/XXMI 的同键轮询抢掉锁存位（"有时有用有时没用"的根因）。
     if (TakeHotkeyFreeze()) {
       Log("[CTRL] freeze hotkey -> toggle freeze");
-      if (g_mmd.session.active) { MmdStop(); UnfreezeCharacter(); RestoreBlendShapes(); return; }
+      if (MmdOwnsPose() || g_mmd.session.active || g_mmd.preview) { MmdStop(); UnfreezeCharacter(); RestoreBlendShapes(); return; }
       if (g_frozen) {
         UnfreezeCharacter();
         RestoreBlendShapes();
@@ -277,6 +278,8 @@ static void GameFrameTickBody() {
     // 冻结态维持：每帧强制关闭 Animator/动画组件/IK 组件（游戏会重新启用）
     MaintainFreeze();
     LONG mmdKeys = InterlockedExchange(&g_mmdHotkeyRequests, 0);
+    if(mmdKeys)Log("[INPUT] MMD hotkey mask=%ld target=%s preview=%d",mmdKeys,
+      g_mmdSquadBridge.hotkeyTarget&&g_mmdSquadBridge.hotkeyTarget()?"squad":"single",g_mmd.preview);
     if (mmdKeys & (1 << 2)) MmdPlaybackCommand(2);
     else if (mmdKeys & (1 << 3)) MmdPlaybackCommand(3);
     else if (mmdKeys & (1 << 1)) MmdPlaybackCommand(1);
@@ -389,8 +392,9 @@ static void DrawPoserGuiBody() {
       SelectTransform(nullptr, nullptr);
     ImGui::Separator();
     ImGui::Checkbox(u8"MMD 播放器", &g_mmd.show);
+    ImGui::Checkbox(u8"MMD 多人播放器", &g_squad.show);
     if (ImGui::Button(g_frozen ? "Unfreeze" : "Freeze Character")) {
-      bool wasPlaying = g_mmd.session.active;
+      bool wasPlaying = MmdOwnsPose();
       if (wasPlaying) MmdStop();
       Log("[GUI] Freeze button clicked (frozen=%d animator=%p bones=%d)",
           (int)g_frozen, g_charAnimator, s_humanBoneCount);
@@ -539,6 +543,7 @@ static void DrawPoserGuiBody() {
   DrawBoneTreePanel();
   ImGui::EndDisabled();
   DrawMmdPanel();
+  DrawMmdSquadPanel();
   if (g_resetPanelLayoutFrames > 0) --g_resetPanelLayoutFrames;
 }
 
@@ -563,7 +568,7 @@ static void ExtControl(int code) {
   RuntimeThreadScope runtime;
   if (!runtime.ready) return;
   if (!poser_agreement::Allowed()) return;
-  if(g_mmd.session.active) { if(code==1){MmdStop();UnfreezeCharacter();} return; }
+  if(MmdOwnsPose() || g_mmd.session.active || g_mmd.preview) { if(code==1){MmdStop();UnfreezeCharacter();} return; }
   switch (code) {
   case 1:
     if (g_frozen) {
@@ -596,6 +601,7 @@ static void OnGuiShutdownRestore() {
   s_mmdClosing.store(true);
   if(HWND dialog=s_mmdDialog.load()) PostMessageW(dialog,WM_CLOSE,0,0);
   if(g_mmd.loading) { g_mmd.loader.wait(); g_mmd.loading=false; }
+  if(g_squad.loading) {g_squad.loader.wait();g_squad.loading=false;}
   if(g_mmd.faceLibraryLoading) { g_mmd.faceLoader.wait(); g_mmd.faceLibraryLoading=false; }
   if (g_frozen) {
     Log("[POSER] shutdown: unfreeze + restore (frozen=%d)", (int)g_frozen);
@@ -669,7 +675,24 @@ static void ProcessControlFileBody() {
       Log("[CTRL] command ignored: user agreement required");
       continue;
     }
-    if (strncmp(line, "mmd_load ", 9) == 0) {
+    if (strncmp(line, "squad_load ", 11) == 0) {
+      char *path=nullptr;int slot=int(strtol(line+11,&path,10));
+      if(path&&*path==' '&&slot>=1&&slot<=4)MmdSquadLoad(slot-1,false,std::filesystem::u8path(path+1));
+    } else if (strncmp(line,"squad_copy ",11)==0) {
+      MmdSquadCopyToAll(atoi(line+11)-1);
+    } else if (strncmp(line,"squad_seek ",11)==0) {
+      MmdSquadSeek(atof(line+11)/30.);
+    } else if (strcmp(line,"squad_play")==0) {
+      g_squad.hotkeys=true;MmdSquadCommand(0);
+    } else if (strcmp(line,"squad_pause")==0) {
+      MmdSquadCommand(1);
+    } else if (strcmp(line,"squad_stop")==0) {
+      g_squad.hotkeys=true;MmdSquadCommand(2);
+    } else if (strcmp(line,"squad_refresh")==0) {
+      g_squad.refresh=true;g_squad.show=true;
+    } else if (strcmp(line,"squad_line")==0) {
+      for(int i=0;i<4;++i)g_squad.slots[i].offset={float(i)-1.5f,0,0};
+    } else if (strncmp(line, "mmd_load ", 9) == 0) {
       MmdBeginLoad(0, std::filesystem::u8path(line + 9));
     } else if (strncmp(line, "mmd_append ", 11) == 0) {
       MmdBeginLoad(1, std::filesystem::u8path(line + 11));
@@ -694,18 +717,19 @@ static void ProcessControlFileBody() {
     } else if (strcmp(line, "mmd_calibrate_confirm") == 0) {
       MmdConfirmCalibration();
     } else if (strcmp(line, "mmd_calibrate_auto") == 0) {
-      if (!g_mmd.session.active && !g_mmd.loading) {
+      if (!g_mmd.session.active && !g_mmd.loading && !MmdSquadBusy()) {
         g_mmd.profileRevision = -1;
         MmdPrepareProfile();
       }
     } else if (strncmp(line, "mmd_seek ", 9) == 0) {
+      if(MmdSquadBusy()) {MmdSquadSeek(atof(line+9)/30.);continue;}
       if(!g_mmd.session.active) MmdStart();
       if(MmdOwnsPose()) {MmdSeek(atof(line+9)/30.);MmdApplyFrame();}
     } else if (strcmp(line, "toggle") == 0) {
       g_guiVisible = !g_guiVisible;
       Log("[CTRL] file toggle -> %d", (int)g_guiVisible);
     } else if (strcmp(line, "freeze") == 0) {
-      if(g_mmd.session.active) {MmdStop();UnfreezeCharacter();RestoreBlendShapes();continue;}
+      if(MmdOwnsPose() || g_mmd.session.active || g_mmd.preview) {MmdStop();UnfreezeCharacter();RestoreBlendShapes();continue;}
       if (g_frozen) {
         UnfreezeCharacter();
         RestoreBlendShapes();
@@ -765,6 +789,7 @@ static DWORD WINAPI InitThread(LPVOID) {
   poser_agreement::state.load(PoserFilePath(poser_agreement::kFileName));
   Log("[AGREEMENT] revision %d: %s", poser_agreement::kRevision,
       poser_agreement::Allowed() ? "already accepted" : "confirmation required");
+  MmdSquadInstall();
   g_beforeCharacterChange = PrepareCharacterHandoff;
   g_onFreezeReleased=SMCReleaseFreeze;
   // 注册外部控制回调：PostMessage 通道（绕过反作弊对合成输入的拦截）

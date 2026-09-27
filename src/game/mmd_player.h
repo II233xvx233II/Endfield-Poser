@@ -5,8 +5,10 @@
 #include "game/smc_morph.h"
 #include "math/mmd_props.h"
 #include "math/mmd_retarget.h"
+#include "math/mmd_calibration.h"
 #include "math/mmd_adaptation.h"
 #include "game/mmd_camera.h"
+#include "game/mmd_camera_settings.h"
 #include "nlohmann/json.hpp"
 #include <atomic>
 #include <chrono>
@@ -258,6 +260,7 @@ static bool MmdBindCalibration(mmd::RetargetProfile &profile) {
       missing.c_str());
   return profile.valid();
 }
+static uint64_t s_mmdCalibrationSerial=0;
 static void MmdSaveCalibration(const mmd::RetargetProfile &p) {
   using nlohmann::json;
   json j = {{"version", 3},
@@ -297,46 +300,33 @@ static void MmdSaveCalibration(const mmd::RetargetProfile &p) {
   if (!MoveFileExW(temp.c_str(), dest.c_str(),
                    MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
     throw std::runtime_error("Cannot replace calibration");
+  ++s_mmdCalibrationSerial;
 }
 static bool MmdLoadCalibration(mmd::RetargetProfile &p) {
+  auto load=[&](const std::filesystem::path &path) {
+    try {
+      if(std::filesystem::file_size(path)>4*1024*1024)return false;
+      std::ifstream f(path);nlohmann::json j;f>>j;
+      if(j.value("model","")!=p.model)return false;
+      return mmd::RestoreBodyCalibration(mmd::ReadCalibration(j),p);
+    }catch(...){return false;}
+  };
+  const auto directory=MmdConfigDirectory(),exact=directory/(p.fingerprint+".rig.json");
+  if(load(exact))return true;
+  // Preserve version-3 user files. A weapon or effect change can alter the old
+  // whole-hierarchy fingerprint while the actual calibrated body is unchanged.
   try {
-    std::ifstream f(MmdConfigDirectory() / (p.fingerprint + ".rig.json"));
-    if (!f)
-      return false;
-    nlohmann::json j;
-    f >> j;
-    if (j.value("version", 0) != 3 || j.value("model", "") != p.model ||
-        j.value("fingerprint", "") != p.fingerprint ||
-        j["bones"].size() != p.bones.size())
-      return false;
-    auto copy = p;
-    for (size_t i = 0; i < p.bones.size(); i++) {
-      auto &b = copy.bones[i];
-      const auto &v = j["bones"][i];
-      if (v["name"] != b.name || v["parent"] != b.parent || v["role"] != b.role)
-        return false;
-      auto a = v["pos"], q = v["rot"];
-      b.localPos = {a.at(0), a.at(1), a.at(2)};
-      b.localRot = {q.at(0), q.at(1), q.at(2), q.at(3)};
-      auto scale = v["scale"];
-      Vec3 savedScale{scale.at(0), scale.at(1), scale.at(2)};
-      if (Len(savedScale - b.localScale) > 1e-5f)
-        return false;
-      b.calibrated = v.value("calibrated", false);
-      for (float x : {b.localPos.x, b.localPos.y, b.localPos.z, b.localRot.x,
-                      b.localRot.y, b.localRot.z, b.localRot.w})
-        if (!std::isfinite(x))
-          return false;
-      b.localRot = NormQ(b.localRot);
+    std::vector<std::pair<std::filesystem::file_time_type,std::filesystem::path>> candidates;
+    for(const auto &entry:std::filesystem::directory_iterator(directory)) {
+      const auto name=entry.path().filename().wstring();
+      if(entry.is_regular_file()&&entry.path()!=exact&&name.size()>9&&name.substr(name.size()-9)==L".rig.json")
+        candidates.emplace_back(entry.last_write_time(),entry.path());
+      if(candidates.size()>256)return false;
     }
-    copy.globals();
-    if (!copy.valid())
-      return false;
-    p = std::move(copy);
-    return true;
-  } catch (...) {
-    return false;
-  }
+    std::sort(candidates.rbegin(),candidates.rend());
+    for(const auto &candidate:candidates)if(load(candidate.second))return true;
+  }catch(...){}
+  return false;
 }
 struct MmdSavedTransform {
   void *transform;
@@ -390,6 +380,7 @@ struct MmdSession {
   bool bodyOwned = false;
   uint64_t cameraSession = 0;
   Quat cameraBasis;
+  float cameraHeight=0;
   bool active = false, wasFrozen = false, freezeAccessories = false,
        animatorWasEnabled = false;
   void *animator = nullptr;
@@ -441,6 +432,8 @@ struct MmdPlayer {
   std::vector<mmd::CameraKey> cameraTrack;
   std::string cameraFile;
   mmd::CameraSettings cameraSettings;
+  mmd::CameraPresetStore cameraPresets;
+  std::string cameraTrackId;
   mmd::RigDefinition rig = mmd::StandardRig();
   mmd::RigDefinition baseRig = mmd::StandardRig();
   mmd::RigAdaptation adaptation;
@@ -473,6 +466,20 @@ struct MmdPlayer {
 // by the CRT under the DLL loader lock after Windows has stopped other threads.
 // Normal plugin disable still performs MmdStop and joins imports explicitly.
 static MmdPlayer &g_mmd = *new MmdPlayer;
+// Optional squad controller. Callbacks are installed by mmd_squad.h; keeping
+// this boundary independent also preserves the standalone single-player tests.
+struct MmdSquadBridge {
+  bool (*active)() = nullptr;
+  void (*stop)() = nullptr;
+  bool (*tick)() = nullptr;
+  bool (*command)(int) = nullptr;
+  bool (*busy)() = nullptr;
+  void (*selectSingle)() = nullptr;
+  bool (*hotkeyTarget)() = nullptr;
+};
+static MmdSquadBridge g_mmdSquadBridge;
+static bool MmdSquadOwnsPose() {return g_mmdSquadBridge.active && g_mmdSquadBridge.active();}
+static bool MmdSquadBusy() {return g_mmdSquadBridge.busy && g_mmdSquadBridge.busy();}
 static mmd::DeferredStart s_mmdStartRequest;
 static const std::vector<mmd::CameraKey> &MmdCameraKeys() {
   return g_mmd.cameraFile.empty() ? g_mmd.clip.cameras : g_mmd.cameraTrack;
@@ -480,10 +487,25 @@ static const std::vector<mmd::CameraKey> &MmdCameraKeys() {
 static bool MmdHasContent() { return !g_mmd.clip.empty() || !MmdCameraKeys().empty(); }
 static void MmdUpdateDuration() {
   auto &m=g_mmd;const auto &keys=MmdCameraKeys();
-  uint32_t last=keys.empty()?0:keys.back().frame;
+  uint32_t last=0;
   for(const auto &kv:m.clip.bones)if(!kv.second.empty())last=(std::max)(last,kv.second.back().frame);
   for(const auto &kv:m.clip.morphs)if(!kv.second.empty())last=(std::max)(last,kv.second.back().frame);
-  m.timeline.duration=last/30.0;
+  m.timeline.duration=(std::max)(last/30.0,mmd::CameraDuration(keys,m.cameraSettings));
+}
+static void MmdSelectCameraSettings() {
+  auto &m=g_mmd;
+  static void *actor=nullptr;static int revision=-1;static std::string model;
+  if(actor!=g_charAnimator||revision!=s_bonesRev) {
+    actor=g_charAnimator;revision=s_bonesRev;model=character_face::ModelKey(CurrentCharModelKey());
+  }
+  m.cameraPresets.load(MmdConfigDirectory()/L"camera-settings.json");
+  auto previous=m.cameraPresets.selected;
+  m.cameraPresets.select(model,m.cameraTrackId,m.cameraSettings);
+  if(previous!=m.cameraPresets.selected)MmdUpdateDuration();
+}
+static void MmdCameraTrackChanged() {
+  g_mmd.cameraTrackId=mmd::CameraTrackId(MmdCameraKeys());
+  MmdSelectCameraSettings();
 }
 static void MmdPublishCamera() {
   auto &m=g_mmd;auto &s=m.session;const auto &keys=MmdCameraKeys();
@@ -492,9 +514,11 @@ static void MmdPublishCamera() {
   }
   // Track actual model-root motion; camera-only playback can follow locomotion.
   Vec3 delta=GetBoneWorldPos(s.root)-s.anchorWorld.position();
+  Vec3 correction=s.bodyOwned?mmd::Rotation(s.anchorWorld)*Vec3{0,m.height,0}:Vec3{};
   mmd_camera::Publish({true,s.cameraSession,s.animator,
-    mmd::PlaceCamera(mmd::SampleCamera(keys,m.timeline.seconds*30,m.cameraSettings.cuts),
-      m.cameraSettings,s.anchorWorld.position(),s.cameraBasis,delta,m.scale)});
+    mmd::PlaceCamera(mmd::SampleCamera(keys,mmd::CameraFrame(m.timeline.seconds,m.cameraSettings),m.cameraSettings),
+      m.cameraSettings,s.anchorWorld.position(),s.cameraBasis,delta,m.scale,
+      s.cameraHeight,mmd::CameraSourceHeight(m.rig),correction),nullptr,0,m.timeline.seconds*30});
 }
 
 static void MmdSyncAudio() {
@@ -517,8 +541,7 @@ static const char *MmdSourceRigLabel() {
   return g_mmd.rig.name == "Extracted T-pose" ? u8"提取动作 T 姿（中心骨在原点）"
                                               : u8"标准 MMD（A 姿）";
 }
-static void MmdHideProps(bool force = false) {
-  auto &s = g_mmd.session;
+static void MmdHideSessionProps(MmdSession &s, bool force = false) {
   if (!s.active || !s.bodyOwned || !UnityObjAlive(s.root) || !g_gameObject_setActive)
     return;
   double now = MmdNow();
@@ -564,6 +587,7 @@ static void MmdHideProps(bool force = false) {
     }
   }
 }
+static void MmdHideProps(bool force = false) {MmdHideSessionProps(g_mmd.session,force);}
 static std::atomic<HWND> s_mmdDialog{nullptr};
 static std::atomic<bool> s_mmdClosing{false};
 static UINT_PTR CALLBACK MmdDialogHook(HWND window, UINT message, WPARAM,
@@ -761,7 +785,7 @@ static bool MmdApplyAdaptation(const mmd::RigAdaptation &next, int sourcePreset)
 }
 static void MmdBeginLoad(int kind, std::filesystem::path path = {}) {
   auto &m = g_mmd;
-  if (m.loading || m.session.active)
+  if (m.loading || m.session.active || MmdSquadBusy())
     return;
   s_mmdClosing.store(false);
   HWND owner = g_gameHwnd;
@@ -836,17 +860,17 @@ static void MmdBeginLoad(int kind, std::filesystem::path path = {}) {
       }
       if (kind == 3 && std::filesystem::file_size(selected) > 1024 * 1024)
         throw std::runtime_error(u8"适配预设超过 1 MiB");
-      auto bytes = mmd::ReadFile(selected);
       if (kind == 3) {
+        auto bytes = mmd::ReadFile(selected);
         result.adaptation = nlohmann::json::parse(bytes.begin(), bytes.end());
         int pose; mmd::IkMode ik;
         mmd::ReadAdaptation(result.adaptation, pose, ik);
         mmd::ReadAmplitude(result.adaptation);
         mmd::ReadNativeCloth(result.adaptation);
       } else if (kind == 2)
-        result.rig = mmd::ReadPmx(bytes, mmd::Decode);
+        result.rig = mmd::ReadPmx(mmd::ReadFile(selected), mmd::Decode);
       else {
-        result.clip = mmd::ReadVmd(bytes, mmd::Decode);
+        result.clip = mmd::ReadVmdFile(selected);
         if (result.clip.empty())
           throw std::runtime_error("VMD contains no bone, face or camera motion");
         if (kind == 6 && result.clip.cameras.empty())
@@ -877,7 +901,7 @@ static void MmdPollLoad() {
     return;
   if (!r.error.empty()) {
     m.status = r.error;
-    Log("[MMD] load error: %s", r.error.c_str());
+    Log("[MMD] load error file=%s: %s", r.file.c_str(), r.error.c_str());
     return;
   }
   if (r.kind == 5) {
@@ -890,7 +914,7 @@ static void MmdPollLoad() {
   }
   if (r.kind == 6) {
     m.cameraTrack=std::move(r.clip.cameras);m.cameraFile=r.file;
-    m.cameraSettings.enabled=true;MmdUpdateDuration();
+    MmdCameraTrackChanged();MmdUpdateDuration();
     m.status=u8"镜头已导入，随动作时间轴播放";
     Log("[MMD-CAMERA] imported %s: keys=%zu",r.file.c_str(),m.cameraTrack.size());
     return;
@@ -951,6 +975,8 @@ static void MmdPollLoad() {
     m.clip = std::move(r.clip);
     m.file = r.file;
     m.timeline.stop();
+    MmdCameraTrackChanged();
+    if(g_mmdSquadBridge.selectSingle)g_mmdSquadBridge.selectSingle();
   }
   MmdUpdateDuration();
   MmdMapMorphs();
@@ -1023,6 +1049,7 @@ static void MmdCaptureSession() {
     s.anchorWorldValid=true;
   }
   s.cameraBasis=NormQ(mmd::Rotation(s.anchorWorld)*m.mapper.sourceBasis());
+  s.cameraHeight=mmd::CameraTargetHeight(m.profile);
   if (m.clip.bones.empty()) {
     // Camera-only/face-only clips do not require a calibrated body rig.
     auto at=[&](int role) {for(int i=0;i<s_humanBoneCount;++i)
@@ -1083,6 +1110,7 @@ static void MmdCaptureSession() {
 }
 static void MmdStop() {
   std::lock_guard<std::recursive_mutex> lock(g_poseMutex);
+  if(g_mmdSquadBridge.stop)g_mmdSquadBridge.stop();
   auto &m = g_mmd;
   auto &s = m.session;
   m.timeline.stop();
@@ -1223,6 +1251,7 @@ static bool MmdClothMayAdjustAnchor(void *transform) {
 }
 static bool MmdStart() {
   auto &m = g_mmd;
+  if(MmdSquadBusy()) {m.status=u8"请先完成多人导入或停止多人播放";return false;}
   if (m.loading || m.preview || !MmdHasContent()) return false;
   // Capture cloth originals before suppressing animation, on the Unity thread.
   if (!ClothOnMainThread()) {
@@ -1272,6 +1301,8 @@ static void MmdTick() {
     MmdLoadFaceSettings();
     MmdPollCharacterFaces();
     MmdPollLoad();
+    MmdSelectCameraSettings();
+    if(g_mmdSquadBridge.tick && g_mmdSquadBridge.tick())return;
     if (s_mmdStartRequest.active && ClothOnMainThread()) {
       const auto request=s_mmdStartRequest;
       if (MmdStart()) request.apply(m.timeline,MmdNow());
@@ -1300,7 +1331,12 @@ static void MmdTick() {
 }
 // Reset keeps the playback anchor and holds frame zero; Stop restores the pose
 // captured before playback. Pausing never captures or replaces that session.
-static void MmdPlaybackCommand(int command) {
+static void MmdPlaybackCommand(int command, bool allowSquad = true) {
+  // A live single session/calibration always owns transport. An idle squad
+  // selection must never swallow pause/stop for the character on screen.
+  if(allowSquad && !g_mmd.session.active && !g_mmd.preview && !s_mmdStartRequest.active &&
+     g_mmdSquadBridge.command && g_mmdSquadBridge.command(command))return;
+  if(!allowSquad && g_mmdSquadBridge.selectSingle)g_mmdSquadBridge.selectSingle();
   try {
     auto &m = g_mmd;
     Log("[MMD] command begin=%d state=%d frame=%.2f actor=%p", command,
@@ -1309,8 +1345,8 @@ static void MmdPlaybackCommand(int command) {
       MmdStop();
       return;
     }
-    if (m.preview || m.loading)
-      return;
+    if(m.preview){m.status=u8"正在 T 姿校准：请先确认保存或取消校准，再播放动作";return;}
+    if(m.loading){m.status=u8"动作仍在读取，请完成后再使用播放快捷键";return;}
     if (command == 0) {
       MmdStart();
     } else if (command == 1 && s_mmdStartRequest.active) {
@@ -1333,6 +1369,7 @@ static void MmdPlaybackCommand(int command) {
 }
 static void MmdBeginCalibration() {
   auto &m = g_mmd;
+  if(MmdSquadBusy()) {m.status=u8"请先停止多人播放或完成导入";return;}
   if (m.session.active || m.loading)
     return;
   if (!MmdCharacterReady()) {

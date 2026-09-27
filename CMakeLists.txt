@@ -46,13 +46,15 @@ if(WIN32)
     src/config.h
     src/core/user_agreement.h src/editor/panel_agreement.h
     src/math/mmd_motion.h src/math/mmd_rig.h src/math/mmd_retarget.h src/math/mmd_props.h src/math/mmd_adaptation.h src/math/mmd_amplitude.h
+    src/game/mmd_squad.h src/game/squad.h src/game/smc_actor_state.h src/math/mmd_squad.h src/editor/panel_mmd_squad.h
     src/game/mmd_player.h src/game/mmd_io.h src/game/frozen_grip.h src/editor/panel_mmd.h src/editor/panel_mmd_adaptation.h
     src/core/game_hooks.h
     src/core/gui_overlay.h src/core/layered_readback.h src/core/overlay_device.h
-    src/core/frame_driver.h src/math/frame_cadence.h
+    src/core/frame_driver.h src/math/frame_cadence.h src/math/hotkey_state.h
     src/core/runtime_bootstrap.h src/core/runtime_lifetime.h src/core/runtime_shutdown.h src/core/plugin_paths.h src/core/proxy_loader.h
     src/game/mmd_audio.h src/math/mmd_audio_sync.h
     src/game/mmd_camera.h src/math/mmd_camera.h src/game/eye_gaze.h src/math/eye_gaze.h
+    src/game/mmd_camera_settings.h src/math/mmd_camera_profile.h src/math/mmd_calibration.h
     src/math/cloth_state.h src/game/cloth.h src/game/cloth_anchor.h
     src/game/skeleton.h src/game/freeze.h src/game/accessory.h src/game/morph.h src/game/smc_morph.h src/game/smc_automation.h
     src/math/character_face.h src/math/face_geometry.h src/math/mmd_face_controls.h
@@ -134,6 +136,7 @@ add_poser_test(test_ik tests/test_ik.cpp)
 add_poser_test(test_native_cloth tests/test_native_cloth.cpp)
 add_poser_test(test_pose_file tests/test_pose_file.cpp)
 add_poser_test(test_mmd tests/test_mmd.cpp)
+add_poser_test(test_mmd_calibration tests/test_mmd_calibration.cpp)
 add_poser_test(test_mmd_camera tests/test_mmd_camera.cpp)
 add_poser_test(test_mmd_transport tests/test_mmd_transport.cpp)
 add_poser_test(test_character_faces tests/test_character_faces.cpp)
@@ -142,9 +145,12 @@ add_poser_test(test_eye_gaze tests/test_eye_gaze.cpp)
 set_tests_properties(test_character_faces PROPERTIES WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
 if(MSVC)
   add_poser_test(test_user_agreement tests/test_user_agreement.cpp)
+  add_poser_test(test_mmd_large tests/test_mmd_large.cpp)
+  add_poser_test(test_smc_ownership tests/test_smc_ownership.cpp)
   add_poser_test(test_agreement_ui tests/test_agreement_ui.cpp)
   target_include_directories(test_agreement_ui PRIVATE deps/imgui)
   add_poser_test(test_mmd_camera_runtime tests/test_mmd_camera_runtime.cpp)
+  add_poser_test(test_mmd_camera_settings tests/test_mmd_camera_settings.cpp)
   target_include_directories(test_mmd_camera_runtime PRIVATE deps/minhook_lib/include)
   target_compile_options(test_mmd_camera_runtime PRIVATE /EHa)
   target_link_libraries(test_mmd_camera_runtime PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/deps/minhook_lib/lib/libMinHook.x64.lib)

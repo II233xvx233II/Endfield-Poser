@@ -10,6 +10,7 @@ static void DrawMmdHotkeyHints() {
     HotkeyDisplay(g_mmdHotkeyVK[i], g_mmdHotkeyCtrl[i], keys[i], sizeof(keys[i]));
   ImGui::TextWrapped(u8"播放/继续：%s    暂停：%s", keys[0], keys[1]);
   ImGui::TextWrapped(u8"停止并恢复：%s    重置动作：%s", keys[2], keys[3]);
+  ImGui::TextDisabled(u8"快捷键当前控制：%s",g_mmdSquadBridge.hotkeyTarget&&g_mmdSquadBridge.hotkeyTarget()?u8"多人播放器":u8"单人播放器");
 }
 
 static void DrawMmdAmplitude() {
@@ -85,6 +86,54 @@ static void DrawMmdCloth() {
   }
   ImGui::TextWrapped(u8"效果取决于服装和动作，不能保证消除全部穿模。替换皮肤不匹配或变形异常时，关闭增强。脚底位置可用“高度修正”调整。");
 }
+static bool DrawMmdCameraSettings(double seconds,float targetHeight) {
+  auto &m=g_mmd;auto &s=m.cameraSettings;const auto &keys=MmdCameraKeys();
+  bool changed=false;
+  int origin=int(s.origin);
+  if(ImGui::Combo(u8"镜头原点",&origin,u8"固定播放起点\0跟随角色位移\0")) {s.origin=mmd::CameraOrigin(origin);changed=true;}
+  ImGui::TextWrapped(u8"动作自带跟拍时通常使用固定起点；跟随模式会额外叠加角色位移。");
+  if(s.origin==mmd::CameraOrigin::Follow)changed|=ImGui::Checkbox(u8"跟随上下起伏",&s.followVertical);
+  changed|=ImGui::Checkbox(u8"跟随角色高度修正",&s.followCorrection);
+  changed|=ImGui::SliderFloat3(u8"偏移（左右／上下／前后）",&s.offset.x,-3,3,"%.3f");
+  changed|=ImGui::Checkbox(u8"按角色身高适配构图",&s.autoHeight);
+  if(s.autoHeight) {
+    if(targetHeight>0)ImGui::TextDisabled(u8"校准头脚高度 %.3f m",targetHeight);
+    else ImGui::TextWrapped(u8"缺少可用身高校准，暂用下方单位比例。完成身体校准后自动生效。");
+    changed|=ImGui::SliderFloat(u8"参考头脚高度（0 = 源骨架）",&s.referenceHeight,0,40,"%.2f");
+  }
+  changed|=ImGui::SliderFloat(u8"构图整体倍率",&s.heightScale,.25f,3,"%.2f");
+  ImGui::BeginDisabled(s.autoHeight&&targetHeight>0);
+  changed|=ImGui::Checkbox(u8"单位比例跟随动作",&s.linkScale);
+  if(!s.linkScale)changed|=ImGui::SliderFloat(u8"镜头单位比例",&s.scale,.001f,.3f,"%.4f");
+  ImGui::EndDisabled();
+  changed|=ImGui::SliderFloat(u8"镜头距离倍率",&s.distanceScale,.1f,3,"%.2f");
+  changed|=ImGui::SliderFloat(u8"镜头整体朝向",&s.yaw,-180,180,"%.1f deg");
+  changed|=ImGui::SliderFloat(u8"视角偏移",&s.fovOffset,-60,60,"%.1f deg");
+  changed|=ImGui::DragFloat(u8"镜头时间偏移（秒）",&s.timeOffset,.01f,-600,600,"%.2f",ImGuiSliderFlags_AlwaysClamp);
+  ImGui::TextDisabled(u8"正值延后镜头，负值提前；动作和音乐时间不变。");
+  int cuts=int(s.cutMode);
+  if(ImGui::Combo(u8"切镜方式",&cuts,u8"相邻关键帧硬切（兼容）\0连续插值（逐帧镜头）\0手动指定切镜\0")) {s.cutMode=mmd::CameraCutMode(cuts);changed=true;}
+  if(s.cutMode==mmd::CameraCutMode::Manual&&!keys.empty()) {
+    auto n=mmd::Upper(keys,mmd::CameraFrame(seconds,s));
+    const auto frame=keys[(std::min)(n,keys.size()-1)].frame;
+    ImGui::Text(u8"当前段末尾：镜头帧 %u",frame);
+    if(ImGui::Button(u8"此处切镜")&&s.cutFrames.size()<4096) {
+      s.cutFrames.push_back(frame);std::sort(s.cutFrames.begin(),s.cutFrames.end());
+      s.cutFrames.erase(std::unique(s.cutFrames.begin(),s.cutFrames.end()),s.cutFrames.end());changed=true;
+    }
+    ImGui::SameLine();if(ImGui::Button(u8"取消此处切镜")) {s.cutFrames.erase(std::remove(s.cutFrames.begin(),s.cutFrames.end(),frame),s.cutFrames.end());changed=true;}
+    if(ImGui::Button(u8"清空切镜点")){s.cutFrames.clear();changed=true;}
+    ImGui::SameLine();ImGui::Text(u8"已标记 %zu 处",s.cutFrames.size());
+  }
+  if(ImGui::Button(u8"复位镜头调整")){s={};changed=true;}
+  ImGui::SameLine();
+  if(ImGui::Button(u8"保存此角色＋镜头设置"))m.cameraPresets.save(MmdConfigDirectory()/L"camera-settings.json",s);
+  ImGui::TextWrapped("%s",m.cameraPresets.status.c_str());
+  ImGui::TextWrapped("%s",mmd_camera::status.load());
+  if(mmd_camera::desiredActive.load())ImGui::TextDisabled(u8"游戏相机驱动：%s",mmd_camera::driverPaused.load()?u8"已暂时暂停":u8"使用末帧覆盖");
+  if(changed)MmdUpdateDuration();
+  return changed;
+}
 static void DrawMmdCamera() {
   if (!ImGui::CollapsingHeader(u8"MMD 镜头")) return;
   auto &m=g_mmd;auto &s=m.cameraSettings;const auto &keys=MmdCameraKeys();
@@ -93,7 +142,7 @@ static void DrawMmdCamera() {
   ImGui::SameLine();
   if (ImGui::Button(u8"移除镜头")) {
     m.cameraFile.clear();m.cameraTrack.clear();m.clip.cameras.clear();
-    mmd::Recount(m.clip);MmdUpdateDuration();mmd_camera::Stop();
+    mmd::Recount(m.clip);MmdCameraTrackChanged();MmdUpdateDuration();mmd_camera::Stop();
   }
   ImGui::EndDisabled();
   if(m.session.active)ImGui::TextDisabled(u8"停止并恢复后可更换镜头文件");
@@ -104,28 +153,13 @@ static void DrawMmdCamera() {
   ImGui::TextWrapped("%s",m.cameraFile.empty()?m.file.c_str():m.cameraFile.c_str());
   ImGui::Text(u8"镜头关键帧 %zu / %.2f 秒",keys.size(),keys.back().frame/30.0);
   bool changed=ImGui::Checkbox(u8"随动作播放镜头",&s.enabled);
-  int origin=int(s.origin);
-  if(ImGui::Combo(u8"镜头原点",&origin,u8"按文件轨迹／固定播放起点\0追踪当前角色位移\0")) {
-    s.origin=static_cast<mmd::CameraOrigin>(origin);changed=true;
-  }
-  ImGui::TextWrapped(u8"VMD 没有角色跟随标志。按文件模式以开始播放时角色位置为零点，保留文件原有运镜；追踪模式额外叠加角色位移，已有跟拍的文件通常无需开启。");
-  if(s.origin==mmd::CameraOrigin::Follow)changed|=ImGui::Checkbox(u8"跟随上下起伏",&s.followVertical);
-  changed|=ImGui::SliderFloat3(u8"镜头偏移（左右／上下／前后）",&s.offset.x,-3,3,"%.3f");
-  ImGui::TextWrapped(u8"偏移沿播放开始时的角色坐标轴，单位为游戏世界单位；调整中间的上下值可适配身高。");
-  changed|=ImGui::Checkbox(u8"镜头比例跟随动作位移比例",&s.linkScale);
-  if(!s.linkScale)changed|=ImGui::SliderFloat(u8"镜头单位比例",&s.scale,.001f,.3f,"%.4f");
-  changed|=ImGui::SliderFloat(u8"镜头距离比例",&s.distanceScale,.1f,3.f,"%.2f");
-  changed|=ImGui::SliderFloat(u8"镜头整体朝向",&s.yaw,-180,180,"%.1f deg");
-  changed|=ImGui::SliderFloat(u8"视角偏移",&s.fovOffset,-60,60,"%.1f deg");
-  changed|=ImGui::Checkbox(u8"相邻帧视为切镜",&s.cuts);
-  if(ImGui::Button(u8"复位镜头调整")){s=mmd::CameraSettings{};changed=true;}
+  changed|=DrawMmdCameraSettings(m.timeline.seconds,m.session.active?m.session.cameraHeight:mmd::CameraTargetHeight(m.profile));
   if(changed)MmdPublishCamera();
-  ImGui::TextWrapped("%s",mmd_camera::status.c_str());
   if(!mmd_camera::ready)ImGui::TextWrapped(u8"相机接口尚未就绪，身体动作仍可播放。");
   else if(mmd_camera::request.active && MmdNow()-mmd_camera::lastCallback>2)
     ImGui::TextWrapped(u8"等待游戏相机更新；尚未确认镜头实际生效。");
   ImGui::Text(u8"相机更新 %llu / 实际写入 %llu",(unsigned long long)mmd_camera::callbacks,(unsigned long long)mmd_camera::applied);
-  ImGui::TextWrapped(u8"镜头与动作同步暂停、拖动、倍速和循环。隐藏面板后继续；停止、关闭镜头或换人后恢复原相机。镜头调整当前在本次运行中保留。");
+  ImGui::TextWrapped(u8"镜头随动作暂停、拖动、倍速和循环。隐藏面板后继续；停止或换人后恢复原相机。保存后自动读取同角色、同镜头设置。");
 }
 static void DrawMmdPanel() {
   auto &m = g_mmd;
@@ -139,6 +173,10 @@ static void DrawMmdPanel() {
                     g_pinPanels ? ImGuiWindowFlags_NoMove : 0)) {
     ImGui::End();
     return;
+  }
+  if(MmdSquadBusy()) {
+    ImGui::TextWrapped(u8"多人播放器正在控制小队，请在独立的多人面板暂停或停止。" );
+    ImGui::End();return;
   }
   try {
     DrawMmdHotkeyHints();
@@ -217,14 +255,14 @@ static void DrawMmdPanel() {
     ImGui::BeginDisabled(!MmdHasContent() || m.loading || m.preview);
     if (ImGui::Button(m.timeline.state == mmd::PlayState::Playing ? u8"暂停"
                                                                   : u8"播放")) {
-      MmdPlaybackCommand(m.timeline.state == mmd::PlayState::Playing ? 1 : 0);
+      MmdPlaybackCommand(m.timeline.state == mmd::PlayState::Playing ? 1 : 0, false);
     }
     ImGui::SameLine();
     if (ImGui::Button(u8"停止并恢复"))
-      MmdPlaybackCommand(2);
+      MmdPlaybackCommand(2, false);
     ImGui::SameLine();
     if (ImGui::Button(u8"重置动作"))
-      MmdPlaybackCommand(3);
+      MmdPlaybackCommand(3, false);
     ImGui::SameLine();
     if (ImGui::SmallButton("<")) {
       MmdSeekOrStart(m.timeline.seconds - 1. / 30);

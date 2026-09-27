@@ -27,6 +27,7 @@
 #include "overlay_device.h"
 #include "config.h"   // g_guiToggleVK / g_screenshotVK / 相机速度
 #include "user_agreement.h"
+#include "math/hotkey_state.h"
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(
     HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
@@ -69,7 +70,7 @@ static bool g_inputDragging = false;   // gizmo 拖拽中：必须持续吃，�
 // 也包括游戏自己放开的情况（摄影模式、菜单等）。判定规则：光标出来了就该能点
 // 面板，不必再额外按 Alt。
 static bool g_cursorFreeNow = false;
-static bool g_inputWantsText = false;  // 输入框聚焦中（键盘临时归覆盖层）
+static std::atomic<bool> g_inputWantsText{false};
 // 左键在我们窗口按下且尚未松开：拖拽/点选期间必须一直吃鼠标，否则松开消息会丢给
 // 游戏或落进黑洞，ImGui 的 MouseDown 永远卡在按下 → 之后点哪都没反应。
 static bool g_inputMouseHeld = false;
@@ -117,8 +118,7 @@ static volatile LONG g_hotkeyCaptureVK = 0;
 static volatile LONG g_hotkeyCaptureCtrl = 0;
 
 static DWORD WINAPI HotkeyPollThread(LPVOID) {
-  bool prevToggle = false, prevFreeze = false;
-  bool prevMmd[4] = {};
+  poser::HotkeyEdge toggleEdge,freezeEdge,mmdEdges[4];
   bool prevLBtn = false;
   static bool prevAll[256] = {};
   int lastCapture = 0;
@@ -171,49 +171,45 @@ static DWORD WINAPI HotkeyPollThread(LPVOID) {
             InterlockedExchange(&g_hotkeyCaptureVK, -1);
             break;
           }
+          // The config format supports Ctrl, not Shift/Alt. Do not silently
+          // save Shift+key as Ctrl+key: that makes the captured shortcut fail.
+          if(shift || (GetAsyncKeyState(VK_MENU)&0x8000))continue;
           InterlockedExchange(&g_hotkeyCaptureVK, vk);
-          InterlockedExchange(&g_hotkeyCaptureCtrl, (ctrl || shift) ? 1 : 0);
+          InterlockedExchange(&g_hotkeyCaptureCtrl, ctrl ? 1 : 0);
           Log("[CFG] captured vk=0x%X (%s%s)", vk, ctrl ? "CTRL+" : "",
               shift ? "SHIFT+" : "");
           break;
         }
       }
       // 捕获期间不触发正常热键
-      prevToggle = (GetAsyncKeyState(g_guiToggleVK) & 0x8000) != 0;
-      prevFreeze = (GetAsyncKeyState(g_freezeVK) & 0x8000) != 0;
-      for(int i=0;i<4;++i) prevMmd[i]=(GetAsyncKeyState(g_mmdHotkeyVK[i])&0x8000)!=0;
+      toggleEdge.down = (GetAsyncKeyState(g_guiToggleVK) & 0x8000) != 0;
+      freezeEdge.down = (GetAsyncKeyState(g_freezeVK) & 0x8000) != 0;
+      for(int i=0;i<4;++i) mmdEdges[i].down=(GetAsyncKeyState(g_mmdHotkeyVK[i])&0x8000)!=0;
       Sleep(5);
       continue;
     }
     lastCapture = 0;
-    // 在插件自己的输入框里打字时不响应热键（否则单键绑成字母就会边打字边触发）
-    if (g_inputWantsText) {
-      prevToggle = (GetAsyncKeyState(g_guiToggleVK) & 0x8000) != 0;
-      prevFreeze = (GetAsyncKeyState(g_freezeVK) & 0x8000) != 0;
-      for(int i=0;i<4;++i) prevMmd[i]=(GetAsyncKeyState(g_mmdHotkeyVK[i])&0x8000)!=0;
-      Sleep(5);
-      continue;
-    }
     // 只有游戏窗口（或我们自己的覆盖窗）在前台时才响应热键：
     // 否则在浏览器/聊天里打字也会触发（尤其是被绑成字母的情况）
     HWND fg = GetForegroundWindow();
     bool ourFocus = (fg != nullptr) && (fg == g_gameHwnd || fg == g_guiHwnd);
     bool ctrl = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+    auto allowed=[&](int key,bool combo) {
+      return poser::HotkeyAllowed(ourFocus,fg==g_guiHwnd,g_guiVisible,g_inputWantsText.load(),key,combo);
+    };
     for(int i=0;i<4;++i) {
       bool pressed=(GetAsyncKeyState(g_mmdHotkeyVK[i])&0x8000)!=0 && (!g_mmdHotkeyCtrl[i] || ctrl);
-      if(poser_agreement::Allowed() && ourFocus && pressed && !prevMmd[i]) InterlockedOr(&g_mmdHotkeyRequests,1<<i);
-      prevMmd[i]=pressed;
+      if(mmdEdges[i].sample(pressed,poser_agreement::Allowed() && allowed(g_mmdHotkeyVK[i],g_mmdHotkeyCtrl[i])))
+        InterlockedOr(&g_mmdHotkeyRequests,1<<i);
     }
-    bool t = ourFocus && (GetAsyncKeyState(g_guiToggleVK) & 0x8000) != 0 &&
+    bool t = (GetAsyncKeyState(g_guiToggleVK) & 0x8000) != 0 &&
              (!g_guiToggleCtrl || ctrl);
-    bool f = ourFocus && (GetAsyncKeyState(g_freezeVK) & 0x8000) != 0 &&
+    bool f = (GetAsyncKeyState(g_freezeVK) & 0x8000) != 0 &&
              (!g_freezeCtrl || ctrl);
-    if (t && !prevToggle)
+    if (toggleEdge.sample(t,allowed(g_guiToggleVK,g_guiToggleCtrl)))
       InterlockedIncrement(&g_hotkeyToggleReq);
-    if (poser_agreement::Allowed() && f && !prevFreeze)
+    if (freezeEdge.sample(f,poser_agreement::Allowed() && allowed(g_freezeVK,g_freezeCtrl)))
       InterlockedIncrement(&g_hotkeyFreezeReq);
-    prevToggle = t;
-    prevFreeze = f;
     Sleep(5);
   }
   return 0;
@@ -252,6 +248,7 @@ static void DrawHotkeySetting(const char *label, const char *cfgKey, int *vkp,
   } else {
     int got = (int)g_hotkeyCaptureVK;
     if (got == 0) {
+      ImGui::TextDisabled(u8"支持单键或 Ctrl＋键；请松开 Shift / Alt 后录入。");
       ImGui::TextDisabled(
           u8"\u6309\u4e0b\u65b0\u952e\u2026\uff08\u5355\u952e\u4e5f\u884c\uff0c"
           u8"\u4f46\u5355\u5b57\u6bcd\u4f1a\u548c\u6253\u5b57\u51b2\u7a81\uff1b"

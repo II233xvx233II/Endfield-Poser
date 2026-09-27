@@ -162,15 +162,23 @@ $tests = @(
   @{ Name = 'test_ik';        Src = 'tests\test_ik.cpp' },
   @{ Name = 'test_pose_file'; Src = 'tests\test_pose_file.cpp' },
   @{ Name = 'test_mmd'; Src = 'tests\test_mmd.cpp' },
+  @{ Name = 'test_mmd_large'; Src = 'tests\test_mmd_large.cpp' },
+  @{ Name = 'test_mmd_calibration'; Src = 'tests\test_mmd_calibration.cpp' },
   @{ Name = 'test_mmd_camera'; Src = 'tests\test_mmd_camera.cpp' },
   @{ Name = 'test_mmd_camera_runtime'; Src = 'tests\test_mmd_camera_runtime.cpp' },
+  @{ Name = 'test_mmd_camera_settings'; Src = 'tests\test_mmd_camera_settings.cpp' },
   @{ Name = 'test_mmd_transport'; Src = 'tests\test_mmd_transport.cpp' },
   @{ Name = 'test_mmd_audio'; Src = 'tests\test_mmd_audio.cpp' },
   @{ Name = 'test_frame_driver'; Src = 'tests\test_frame_driver.cpp' },
   @{ Name = 'test_mmd_runtime'; Src = 'tests\test_mmd_runtime.cpp' },
+  @{ Name = 'test_mmd_squad'; Src = 'tests\test_mmd_squad.cpp' },
+  @{ Name = 'test_smc_squad'; Src = 'tests\test_smc_squad.cpp' },
+  @{ Name = 'test_mmd_squad_runtime'; Src = 'tests\test_mmd_squad_runtime.cpp' },
+  @{ Name = 'test_squad_api'; Src = 'tests\test_squad_api.cpp' },
   @{ Name = 'test_character_capture'; Src = 'tests\test_character_capture.cpp' }
   @{ Name = 'test_component_query'; Src = 'tests\test_component_query.cpp' }
   @{ Name = 'test_smc_switch'; Src = 'tests\test_smc_switch.cpp' }
+  @{ Name = 'test_smc_ownership'; Src = 'tests\test_smc_ownership.cpp' }
   @{ Name = 'test_smc_automation'; Src = 'tests\test_smc_automation.cpp' }
   @{ Name = 'test_smc_abi'; Src = 'tests\test_smc_abi.cpp' }
   @{ Name = 'test_character_faces'; Src = 'tests\test_character_faces.cpp' }
