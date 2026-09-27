@@ -1,0 +1,10 @@
+Clothing enhancement adapted from Sasye/EIEM
+https://github.com/Sasye/EIEM/commit/2bd302111eb03fb44f028e9386cf4e732d9191be
+License: GNU Affero General Public License v3.0 (see ../LICENSE).
+
+Imported components: src/cloth, src/build/cloth_resources.*, assets/cloth,
+and the corresponding controller/install routines in src/game/cloth*.h.
+Poser adaptations: host lifecycle and character ownership, offline binding
+validation without reading original live mesh buffers, UI and build integration.
+
+Brotli is distributed under the MIT license in deps/brotli/LICENSE.

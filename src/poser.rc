@@ -39,3 +39,17 @@ BEGIN
         VALUE "Translation", 0x409, 1200
     END
 END
+
+// Compressed clothing resources (prepared by cloth_resources).
+4303 RCDATA "build\\cloth\\resources\\4303.bin"
+4304 RCDATA "build\\cloth\\resources\\4304.bin"
+4305 RCDATA "build\\cloth\\resources\\4305.bin"
+4306 RCDATA "build\\cloth\\resources\\4306.bin"
+4307 RCDATA "build\\cloth\\resources\\4307.bin"
+4308 RCDATA "build\\cloth\\resources\\4308.bin"
+4309 RCDATA "build\\cloth\\resources\\4309.bin"
+4310 RCDATA "build\\cloth\\resources\\4310.bin"
+4311 RCDATA "build\\cloth\\resources\\4311.bin"
+4312 RCDATA "build\\cloth\\resources\\4312.bin"
+4313 RCDATA "build\\cloth\\resources\\4313.bin"
+4314 RCDATA "build\\cloth\\resources\\4314.bin"

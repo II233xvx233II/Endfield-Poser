@@ -4,9 +4,10 @@
 #include "nlohmann/json.hpp"
 
 namespace mmd {
-struct NativeClothPreset { float hipRadius = .124f; };
+struct NativeClothPreset { float hipRadius = .124f; bool enhancement = true; int geometry = 1; float ribbonDamping = .3f; };
 inline nlohmann::json NativeClothJson(const NativeClothPreset &c) {
-  return {{"hip_radius", c.hipRadius}};
+  return {{"hip_radius", c.hipRadius}, {"enhancement", c.enhancement}, {"geometry", c.geometry},
+          {"ribbon_damping", c.ribbonDamping}};
 }
 inline NativeClothPreset ReadNativeCloth(const nlohmann::json &preset) {
   NativeClothPreset c;
@@ -16,6 +17,12 @@ inline NativeClothPreset ReadNativeCloth(const nlohmann::json &preset) {
   c.hipRadius = j.value("hip_radius", .124f);
   if (!std::isfinite(c.hipRadius) || c.hipRadius < 0 || c.hipRadius > .25f)
     throw std::runtime_error(u8"腿根半径补偿超出范围");
+  c.enhancement = j.value("enhancement", true);
+  c.geometry = j.value("geometry", 1);
+  if (c.geometry < 0 || c.geometry > 1) throw std::runtime_error(u8"无效的碰撞体尺寸模式");
+  c.ribbonDamping = j.value("ribbon_damping", .3f);
+  if (!std::isfinite(c.ribbonDamping) || c.ribbonDamping < 0 || c.ribbonDamping > 1)
+    throw std::runtime_error(u8"飘带减振必须在 0–100% 之间");
   return c;
 }
 inline const std::array<const char *, int(MotionPart::Count)> &MotionPartKeys() {

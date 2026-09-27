@@ -1,4 +1,4 @@
-param([switch]$RunTests)
+﻿param([switch]$RunTests)
 
 $ErrorActionPreference = 'Stop'
 
@@ -87,8 +87,8 @@ New-Item -ItemType Directory -Force -Path 'build\obj' | Out-Null
 $sdkIncFlags = ($sdkInc | ForEach-Object { '/I "' + $_ + '"' }) -join ' '
 $sdkLibFlags = '/LIBPATH:"' + $sdkLibDirUm + '" /LIBPATH:"' + $sdkLibDirUcrt + '"'
 
-$common = "/nologo /std:c++17 /O2 /MD /EHa /utf-8 /Fo:build\obj\ /D_CRT_SECURE_NO_WARNINGS /DWIN32_LEAN_AND_MEAN /DIMGUI_DEFINE_MATH_OPERATORS /D_DISABLE_CONSTEXPR_MUTEX_CONSTRUCTOR $sdkIncFlags"
-$inc    = '/I deps /I deps\imgui /I deps\imguizmo /I deps\minhook_lib\include /I deps\json /I src'
+$common = "/nologo /std:c++17 /O2 /bigobj /Gy /Gw /MD /EHa /utf-8 /Fo:build\obj\ /D_CRT_SECURE_NO_WARNINGS /DWIN32_LEAN_AND_MEAN /DIMGUI_DEFINE_MATH_OPERATORS /D_DISABLE_CONSTEXPR_MUTEX_CONSTRUCTOR $sdkIncFlags"
+$inc    = '/DBROTLI_STATIC /I deps\brotli\c\include /I deps /I deps\imgui /I deps\imguizmo /I deps\minhook_lib\include /I deps\json /I src'
 
 function Invoke-Cl([string]$CompileArgs) {
   # /d suppresses user cmd AutoRun scripts; compiler inherits the x64 environment.
@@ -96,6 +96,18 @@ function Invoke-Cl([string]$CompileArgs) {
   cmd /d /c $cmdLine
   if ($LASTEXITCODE -ne 0) { throw "cl failed: $CompileArgs" }
 }
+
+Write-Host '=== Preparing embedded clothing resources ==='
+Invoke-Cl "$common $inc src\build\cloth_resources.cpp /Fe:build\cloth_resources.exe /link $sdkLibFlags"
+& '.\build\cloth_resources.exe' --repo $root --pack
+if ($LASTEXITCODE -ne 0) { throw 'Clothing resource packing failed' }
+New-Item -ItemType Directory -Force -Path 'build\obj\brotli' | Out-Null
+$decoderSources = @(Get-ChildItem -LiteralPath 'deps\brotli\c\common','deps\brotli\c\dec' -Filter '*.c' -File)
+foreach ($file in $decoderSources) {
+  Invoke-Cl ('/nologo /O2 /MD /c /TC /DBROTLI_STATIC /I deps\brotli\c\include /Fo:build\obj\brotli\' + $file.BaseName + '.obj "' + $file.FullName + '"')
+}
+& lib /nologo /OUT:build\obj\cloth_decoder.lib (Get-ChildItem -LiteralPath 'build\obj\brotli' -Filter '*.obj' -File | ForEach-Object FullName)
+if ($LASTEXITCODE -ne 0) { throw 'Clothing decoder library failed' }
 
 Write-Host '=== Compiling version resource ==='
 # cl 不处理 .rc；必须先用 rc.exe 编成 .res，再交给链接器
@@ -111,14 +123,16 @@ if (-not (Test-Path 'build\obj\poser.res')) {
 }
 
 Write-Host '=== Building poser.dll ==='
-$poserArgs = "$common /DAPPLEPIE_PLUGIN_IMPL $inc /LD " +
+$poserArgs = "$common /DBROTLI_STATIC /DAPPLEPIE_PLUGIN_IMPL $inc /I deps\brotli\c\include /LD " +
   'src\poser.cpp ' +
-  'build\obj\poser.res ' +
+  'build\obj\poser.res build\obj\cloth_decoder.lib ' +
   'deps\imgui\imgui.cpp deps\imgui\imgui_draw.cpp deps\imgui\imgui_tables.cpp deps\imgui\imgui_widgets.cpp ' +
   'deps\imgui\imgui_impl_dx11.cpp deps\imgui\imgui_impl_win32.cpp deps\imguizmo\ImGuizmo.cpp ' +
   '/Fe:plugin\poser.dll ' +
   "/link /NODEFAULTLIB:LIBCMT /MAP:plugin\poser.map $sdkLibFlags d3d11.lib dxgi.lib d3dcompiler.lib dwmapi.lib ole32.lib deps\minhook_lib\lib\libMinHook.x64.lib"
 Invoke-Cl $poserArgs
+& '.\build\cloth_resources.exe' --repo $root --dll (Join-Path $root 'plugin\poser.dll')
+if ($LASTEXITCODE -ne 0) { throw 'Embedded clothing resource verification failed' }
 
 Write-Host ''
 Write-Host '=== Building d3dcompiler_47.dll (proxy) ==='
@@ -144,6 +158,7 @@ $tests = @(
   @{ Name = 'test_quat';      Src = 'tests\test_quat.cpp' },
   @{ Name = 'test_native_cloth'; Src = 'tests\test_native_cloth.cpp' },
   @{ Name = 'test_cloth_runtime'; Src = 'tests\test_cloth_runtime.cpp' },
+  @{ Name = 'test_cloth_enhancement'; Src = 'tests\test_cloth_enhancement.cpp' },
   @{ Name = 'test_ik';        Src = 'tests\test_ik.cpp' },
   @{ Name = 'test_pose_file'; Src = 'tests\test_pose_file.cpp' },
   @{ Name = 'test_mmd'; Src = 'tests\test_mmd.cpp' },
@@ -167,7 +182,7 @@ $tests = @(
 )
 foreach ($t in $tests) {
   if (-not (Test-Path -LiteralPath $t.Src)) { throw "Missing local test source: $($t.Src)" }
-  Invoke-Cl "$common $inc $($t.Src) /Fe:build\tests\$($t.Name).exe /link $sdkLibFlags"
+  Invoke-Cl "$common $inc $($t.Src) /Fe:build\tests\$($t.Name).exe build\obj\cloth_decoder.lib /link $sdkLibFlags"
   & ".\build\tests\$($t.Name).exe"
   if ($LASTEXITCODE -ne 0) { throw "test $($t.Name) failed with exit $LASTEXITCODE" }
 }

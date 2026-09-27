@@ -47,23 +47,43 @@ static void DrawMmdAmplitude() {
 
 static void DrawMmdCloth() {
   if (!ImGui::CollapsingHeader(u8"衣物物理")) return;
-  float hip=s_skirtHipRadiusDelta.load();
-  bool changed=ImGui::SliderFloat(u8"腿根半径补偿", &hip, 0, .25f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
-  if(ImGui::SmallButton(u8"恢复默认补偿")) {hip=.124f;changed=true;}
-  if(changed) {s_skirtHipRadiusDelta.store(hip);s_skirtDirty.store(true);}
-  ImGui::TextWrapped(u8"播放和暂停时使用角色原有衣物、头发和尾巴物理。裙摆被撑开时减小补偿；停止后恢复原设置。可随适配预设保存。");
-  if(g_mmd.freezeCloth) ImGui::TextWrapped(u8"衣物已冻结：取消“冻结头发 / 衣物”后恢复动态模拟。");
-  else if(s_cloth.releasing) ImGui::TextWrapped(u8"正在恢复原有物理设置；未完成前不会接管新角色。");
-  else if(s_cloth.failed) ImGui::TextWrapped(u8"原生物理初始化或校验未通过，已停止调整。详细原因见日志。");
+  s_collisionInspect.store(true);
+  const auto ui=CollisionGetUi();
+  bool enabled=s_clothAutoEnabled.load();
+  if(ImGui::Checkbox(u8"服装碰撞增强", &enabled))
+    ClothBoneQueueCommand(ui.session, !enabled);
+  ImGui::TextWrapped(u8"播放或暂停时自动匹配当前服装。首次准备可能需要等待；关闭后恢复原有衣物。可随适配预设保存。");
+  if(g_mmd.freezeCloth) ImGui::TextWrapped(u8"衣物已冻结：取消“冻结头发 / 衣物”后启用动态模拟。");
+  else if(ui.boneRestoring || s_cloth.releasing) ImGui::TextWrapped(u8"正在恢复原有衣物，请稍候。");
+  else if(ui.autoPreparing) ImGui::TextWrapped(u8"正在准备当前服装，期间保留原有物理。");
+  else if(s_cloth.failed) ImGui::TextWrapped(u8"衣物校验未通过，已停止调整。详细原因见日志。");
   else if(s_cloth.active) {
-    int ready=0,suspended=0;
-    for(int n=0;n<s_cloth.count;++n) {
-      ready+=s_cloth.instances[n].startup.phase==poser_cloth::Phase::Ready;
-      suspended+=s_cloth.instances[n].startup.phase==poser_cloth::Phase::Suspended;
+    const int applied=ui.authoredApplied+ui.autoConnectionsApplied+ui.autoSkinApplied+ui.autoPartialApplied;
+    ImGui::Text(u8"已增强 %d 个部位；保留原有物理 %d 个部位",applied,ui.autoPreserved);
+    if(enabled && !applied && !ui.boneBusy)
+      ImGui::TextWrapped(u8"暂无可用增强，使用角色原有物理。");
+  } else ImGui::TextDisabled(u8"开始播放后匹配服装");
+  const bool ribbonBusy=g_mmd.session.active || ui.boneBusy || s_cloth.active || s_cloth.releasing;
+  ImGui::BeginDisabled(ribbonBusy);
+  float damping=s_clothRibbonDamping.load()*100.f;
+  if(ImGui::SliderFloat(u8"飘带减振",&damping,0,100,"%.0f%%",ImGuiSliderFlags_AlwaysClamp))
+    s_clothRibbonDamping.store(damping*.01f);
+  ImGui::EndDisabled();
+  ImGui::TextWrapped(u8"减轻已增强飘带的反复摆动，默认 30%；0% 使用原始阻尼。过高会减弱飘动。停止并恢复后调整，下次播放生效；可随适配预设保存。");
+  if(ImGui::TreeNode(u8"碰撞体尺寸")) {
+    int geometry=s_collisionGeometry.load();
+    if(ImGui::Combo(u8"尺寸模式",&geometry,u8"腿根半径补偿\0游戏原始尺寸（默认）\0")) {
+      s_collisionGeometry.store(geometry);s_skirtDirty.store(true);
     }
-    ImGui::Text(u8"组件确认 %d / %d，游戏暂挂 %d",ready,s_cloth.count,suspended);
-  } else ImGui::TextDisabled(u8"开始播放后检查原生物理组件");
-  ImGui::TextWrapped(u8"实际避让范围由角色原有布料和碰撞体决定。缺少可动衣物骨骼的部位仍可能穿模。脚底位置可用播放器的“高度修正”调整。");
+    if(geometry==0) {
+      float hip=s_skirtHipRadiusDelta.load();
+      if(ImGui::SliderFloat(u8"腿根半径补偿",&hip,0,.25f,"%.3f",ImGuiSliderFlags_AlwaysClamp)) {
+        s_skirtHipRadiusDelta.store(hip);s_skirtDirty.store(true);
+      }
+    }
+    ImGui::TreePop();
+  }
+  ImGui::TextWrapped(u8"效果取决于服装和动作，不能保证消除全部穿模。替换皮肤不匹配或变形异常时，关闭增强。脚底位置可用“高度修正”调整。");
 }
 static void DrawMmdCamera() {
   if (!ImGui::CollapsingHeader(u8"MMD 镜头")) return;

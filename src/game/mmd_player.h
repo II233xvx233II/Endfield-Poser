@@ -769,7 +769,7 @@ static void MmdBeginLoad(int kind, std::filesystem::path path = {}) {
   if (kind == 4) {
     saved = mmd::AdaptationJson(m.adaptation, m.sourcePreset, m.ikMode);
     saved["motion_amplitude"] = mmd::AmplitudeJson(m.amplitude);
-    saved["native_cloth"] = mmd::NativeClothJson({s_skirtHipRadiusDelta.load()});
+    saved["native_cloth"] = mmd::NativeClothJson({s_skirtHipRadiusDelta.load(),s_clothAutoEnabled.load(),s_collisionGeometry.load(),s_clothRibbonDamping.load()});
     saved["requires_pmx"] = m.reference;
     // Portable source structure check, never store a required local PMX path.
     if (m.reference) {
@@ -918,6 +918,9 @@ static void MmdPollLoad() {
       if (MmdApplyAdaptation(a, pose)) {
         m.amplitude = amplitude;
         s_skirtHipRadiusDelta.store(cloth.hipRadius);
+        s_collisionGeometry.store(cloth.geometry);
+        s_clothRibbonDamping.store(cloth.ribbonDamping);
+        ClothBoneQueueCommand(0,!cloth.enhancement);
         s_skirtDirty.store(true);
         m.ikMode = ik; m.adaptationFile = r.file;
         m.status = u8"适配预设已载入：" + r.file;
@@ -1285,7 +1288,7 @@ static void MmdTick() {
       m.timeline.tick(MmdNow());
       MmdApplyFrame();
     }
-    ClothService(m.session.active && !m.preview, MmdClothMayAdjustAnchor);
+    ClothService(m.session.active && !m.preview, MmdClothMayAdjustAnchor, m.timeline.seconds * 30.0);
     MmdSyncAudio();
     if (m.session.active)
       MmdHideProps();

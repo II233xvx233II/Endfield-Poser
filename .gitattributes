@@ -1,0 +1,4 @@
+# Preserve embedded clothing resources and the Brotli dictionary byte-for-byte.
+*.bin binary
+*.bundle binary
+*.br binary

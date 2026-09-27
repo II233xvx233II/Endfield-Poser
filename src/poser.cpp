@@ -26,6 +26,7 @@
 #include "editor/panel_mmd.h"
 #include "editor/panel_agreement.h"
 #include "config.h"
+#include "game/cloth_init.h"
 
 // 手动刷新骨骼（面板按钮 / WebUI /api/refresh 共用）
 // 面板里的「打开日志」：弹资源管理器并选中 poser_log.txt —— 让非技术用户
@@ -760,6 +761,7 @@ static DWORD WINAPI InitThread(LPVOID) {
   Log("[POSER] === Endfield Poser v%s attached (build %s %s) ===",
       POSER_VERSION, __DATE__, __TIME__);
   LoadPoserConfig();
+  ClothInitializeHost();
   poser_agreement::state.load(PoserFilePath(poser_agreement::kFileName));
   Log("[AGREEMENT] revision %d: %s", poser_agreement::kRevision,
       poser_agreement::Allowed() ? "already accepted" : "confirmation required");

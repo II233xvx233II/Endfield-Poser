@@ -107,6 +107,8 @@ static void HandleRequest(SOCKET c, const std::string &path,
   }
   if (path == "/api/mmd/status") {
     auto &m=g_mmd;
+    s_collisionInspect.store(true);
+    const auto enhancement=CollisionGetUi();
     nlohmann::json clothDetails=nlohmann::json::array();
     for(int n=0;n<s_cloth.count;++n) {
       const auto &i=s_cloth.instances[n];
@@ -125,6 +127,14 @@ static void HandleRequest(SOCKET c, const std::string &path,
       {"camera_callback_age",mmd_camera::lastCallback < 0 ? -1.0 : MmdNow()-mmd_camera::lastCallback},
       {"camera_applied",mmd_camera::applied},{"camera_restore_pending",!mmd_camera::request.active&&mmd_camera::lease.camera!=nullptr},
       {"in_place",m.inPlace},{"scale",m.scale},{"status",m.status},
+      {"cloth_enhancement",{{"enabled",s_clothAutoEnabled.load()},
+        {"preparing",enhancement.autoPreparing},{"restoring",enhancement.boneRestoring},
+        {"authored",enhancement.authoredApplied},{"connections",enhancement.autoConnectionsApplied},
+        {"skin",enhancement.autoSkinApplied},{"partial",enhancement.autoPartialApplied},
+        {"preserved",enhancement.autoPreserved},{"catalog",enhancement.catalogCount},
+        {"source",enhancement.catalogSource},{"issue",enhancement.boneIssue},
+        {"geometry",s_collisionGeometry.load()},{"ribbon_damping",s_clothRibbonDamping.load()},
+        {"verbose_diagnostics",s_clothVerboseDiagnostics.load()}}},
       {"cloth_mode","native"},{"cloth_requested",s_clothRequested},
       {"cloth_active",s_cloth.active},{"cloth_failed",s_cloth.failed},
       {"cloth_restore_pending",s_cloth.releasing || (!s_clothRequested && s_cloth.active)},
