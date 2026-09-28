@@ -103,6 +103,13 @@ typedef struct PoserExtensionApi {
                      const char *const *items, int32_t count);
   void (*uiSameLine)(void);
   void (*uiSeparator)(void);
+
+  // Fields below were appended within version 1. Check `size` before use:
+  // offsetof(PoserExtensionApi, field) < api->size.
+
+  // onGui only. Edits a NUL-terminated UTF-8 buffer in place; returns 1 when
+  // the text changed this frame.
+  int32_t (*uiInputText)(const char *label, char *buffer, int32_t capacity);
 } PoserExtensionApi;
 
 // Returns nullptr when the host cannot serve the requested major version.

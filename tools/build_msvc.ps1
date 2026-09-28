@@ -4,7 +4,8 @@ $ErrorActionPreference = 'Stop'
 
 # Endfield Poser - cmake-free MSVC build.
 # Modified 2026-09-28 by II233xvx233II (mirror-extension branch): sdk include
-# path and the optional -Extensions switch.
+# path and the optional -Extensions switch (builds poser_mirror and runs its
+# loopback network self-test).
 #
 # Why this exists:
 #   * Uses installed MSVC and Windows SDK. An optional SDK fallback uses NuGet:
@@ -153,6 +154,9 @@ if ($Extensions) {
   Write-Host '=== Building optional extension poser_mirror.dll ==='
   New-Item -ItemType Directory -Force -Path 'build\extensions' | Out-Null
   Invoke-Cl "$common /I sdk /LD extensions\poser_mirror\poser_mirror.cpp /Fe:build\extensions\poser_mirror.dll /link $sdkLibFlags"
+  Invoke-Cl "$common /I sdk extensions\poser_mirror\net_selftest.cpp /Fe:build\extensions\net_selftest.exe /link $sdkLibFlags"
+  & '.\build\extensions\net_selftest.exe'
+  if ($LASTEXITCODE -ne 0) { throw 'poser_mirror network self-test failed' }
   Write-Host 'Copy build\extensions\poser_mirror.dll into <game>\plugin\ to enable it.'
   Write-Host ''
 }

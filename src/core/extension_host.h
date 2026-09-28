@@ -203,6 +203,11 @@ static void UiSameLine() {
 static void UiSeparator() {
   if (InGuiCall()) ImGui::Separator();
 }
+static int32_t UiInputText(const char *label, char *buffer, int32_t capacity) {
+  if (!InGuiCall() || !label || !buffer || capacity <= 1) return 0;
+  buffer[capacity - 1] = 0;
+  return ImGui::InputText(label, buffer, size_t(capacity));
+}
 
 } // namespace poser_ext
 
@@ -213,6 +218,7 @@ extern "C" __declspec(dllexport) const PoserExtensionApi *PoserGetExtensionApi(u
       poser_ext::ApiGetSquad, poser_ext::ApiCapture, poser_ext::ApiAcquire, poser_ext::ApiApply,
       poser_ext::ApiRelease, poser_ext::ApiStatus,
       poser_ext::UiText, poser_ext::UiTextDisabled, poser_ext::UiCheckbox, poser_ext::UiButton,
-      poser_ext::UiSliderFloat, poser_ext::UiCombo, poser_ext::UiSameLine, poser_ext::UiSeparator};
+      poser_ext::UiSliderFloat, poser_ext::UiCombo, poser_ext::UiSameLine, poser_ext::UiSeparator,
+      poser_ext::UiInputText};
   return version == POSER_EXTENSION_API_VERSION ? &api : nullptr;
 }

@@ -1,134 +1,209 @@
 // Copyright (C) 2026 II233xvx233II. Part of Endfield Poser (mirror-extension branch), AGPL-3.0.
-// Endfield Poser 外部可选扩展：人物镜像（联机投影第 1 步）。
+// Endfield Poser 外部可选扩展：人物镜像与局域网投影。
 //
-// 每帧读取当前操控角色的姿态，写到指定的小队队员上，让队员像“投影”一样
-// 在身旁同步动作。姿态先经过一个带时间戳的缓冲再插值取出，“模拟延迟”即为
-// 第 2 步网络传输预留的抖动缓冲：届时把本地采集换成网络接收即可。
+// 本地镜像（第 1 步）：把当前操控角色的动作复制到一名小队队员上。
+// 局域网投影（第 2 步）：一人创建主机，其他人加入；每名其他玩家显示在本机
+// 小队的一个空闲、非操控位置上。只同步各自角色的姿态，不涉及游戏服务器通信。
 //
 // 放进 <游戏目录>\plugin\ 即由代理加载器载入；没有 poser.dll（或版本过旧）时
 // 什么也不做。只依赖 sdk/poser_extension.h 的 C ABI。
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
-#include <windows.h>
+#include "net_session.h"
 
-#include <cmath>
+#include <algorithm>
+#include <array>
 #include <cstdio>
-#include <deque>
+#include <cstdlib>
+#include <map>
 #include <string>
+#include <vector>
 
 #include "poser_extension.h"
+#include "pose_buffer.h"
 
 namespace {
 
+using mirror_net::Now;
+
 const PoserExtensionApi *api = nullptr;
+// AGPL-3.0 section 13: remote players can reach the source from the panel.
+const char kSource[] = "https://github.com/II233xvx233II/Endfield-Poser/tree/mirror-extension";
 
-struct Sample {
-  double time = 0;
-  PoserHumanPose pose{};
-};
+enum Mode : int32_t { Off, Mirror, Host, Join };
+
 // Touched only from onFrame / onGui, which the host never runs concurrently.
-struct Mirror {
-  int32_t enabled = 0;
-  int32_t slot = 1;     // wanted squad slot, 0-based
-  int32_t active = -1;  // slot currently taken over
-  float right = 1.2f, up = 0, forward = 0, yaw = 0, delayMs = 0;
-  double retryAt = 0;
-  std::deque<Sample> history;
+struct App {
+  int32_t mode = Off, applied = Off;
+  bool connect = false;
   std::string status = u8"未启用";
+
+  // Local mirror
+  int32_t slot = 1, mirrorSlot = -1;
+  float right = 1.2f, up = 0, forward = 0, yaw = 0, delayMs = 0;
+  double mirrorRetry = 0;
+  mirror_pose::PoseBuffer history;
+
+  // LAN
+  char name[mirror_net::kNameBytes] = {};
+  char address[64] = {};
+  char port[8] = {};
+  int32_t placement = 0; // 0 world position, 1 beside me
+  float bufferMs = 100;
+  mirror_net::Session session;
+  std::map<uint8_t, int> assigned; // remote player id -> squad slot
+  std::array<double, POSER_SQUAD_SLOTS> retryAt{};
+  std::vector<std::string> players; // panel lines, rebuilt every frame
 };
-Mirror mirror;
+App &app = *new App; // Leaked: never torn down under the loader lock.
 
-PoserVec3 Lerp(PoserVec3 a, PoserVec3 b, float t) {
-  return {a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t, a.z + (b.z - a.z) * t};
+void StopMirror() {
+  if (app.mirrorSlot >= 0) api->releasePuppet(app.mirrorSlot);
+  app.mirrorSlot = -1;
+  app.history.clear();
 }
-// Normalized lerp along the shorter arc; consecutive frames are close together.
-PoserQuat Nlerp(PoserQuat a, PoserQuat b, float t) {
-  const float sign = a.x * b.x + a.y * b.y + a.z * b.z + a.w * b.w < 0 ? -1.f : 1.f;
-  PoserQuat q{a.x + (b.x * sign - a.x) * t, a.y + (b.y * sign - a.y) * t,
-              a.z + (b.z * sign - a.z) * t, a.w + (b.w * sign - a.w) * t};
-  const float length = std::sqrt(q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w);
-  if (length < 1e-6f) return a;
-  return {q.x / length, q.y / length, q.z / length, q.w / length};
+void StopNet() {
+  for (const auto &entry : app.assigned) api->releasePuppet(entry.second);
+  app.assigned.clear();
+  app.players.clear();
+  app.session.stop();
 }
-PoserHumanPose Blend(const PoserHumanPose &a, const PoserHumanPose &b, float t) {
-  PoserHumanPose out = a;
-  out.boneMask = a.boneMask & b.boneMask;
-  out.rootPosition = Lerp(a.rootPosition, b.rootPosition, t);
-  out.bodyRotation = Nlerp(a.bodyRotation, b.bodyRotation, t);
-  out.hipsPosition = Lerp(a.hipsPosition, b.hipsPosition, t);
-  for (int bone = 0; bone < POSER_HUMAN_BONES; ++bone)
-    if (out.boneMask >> bone & 1) out.rotations[bone] = Nlerp(a.rotations[bone], b.rotations[bone], t);
-  return out;
+void Connect() {
+  app.connect = false;
+  StopNet();
+  const int port = atoi(app.port);
+  if (port < 1024 || port > 65535) { app.status = u8"端口需在 1024–65535 之间"; return; }
+  if (!app.name[0]) mirror_net::CopyName(app.name, u8"玩家");
+  if (app.mode == Join && !app.address[0]) { app.status = u8"输入主机 IP 后点击“连接”"; return; }
+  std::string error;
+  const bool ok = app.mode == Host ? app.session.startHost(uint16_t(port), app.name, error)
+                                   : app.session.startJoin(app.address, uint16_t(port), app.name, error);
+  if (!ok) app.status = error;
 }
-bool SampleAt(double time, PoserHumanPose &out) {
-  const auto &h = mirror.history;
-  if (h.empty()) return false;
-  if (time <= h.front().time) { out = h.front().pose; return true; }
-  for (size_t i = 1; i < h.size(); ++i)
-    if (h[i].time >= time) {
-      const double span = h[i].time - h[i - 1].time;
-      const float t = span > 1e-6 ? float((time - h[i - 1].time) / span) : 1.f;
-      out = Blend(h[i - 1].pose, h[i].pose, t);
-      return true;
-    }
-  out = h.back().pose;
-  return true;
-}
-void Trim(double now) {
-  // Keep the pair that brackets the delayed read time, plus half a second.
-  const double oldest = now - mirror.delayMs / 1000.0 - .5;
-  while (mirror.history.size() > 2 && mirror.history[1].time < oldest) mirror.history.pop_front();
+void SwitchMode() {
+  StopMirror();
+  StopNet();
+  app.applied = app.mode;
+  app.status = app.mode == Mirror ? u8"本地镜像" : u8"未启用";
+  if (app.mode == Host || (app.mode == Join && app.address[0])) Connect();
+  else if (app.mode == Join) app.status = u8"输入主机 IP 后点击“连接”";
 }
 
-void Stop(const char *status) {
-  if (mirror.active >= 0) api->releasePuppet(mirror.active);
-  mirror.active = -1;
-  mirror.history.clear();
-  if (status) mirror.status = status;
-}
-
-void OnFrame(void *) {
-  auto &m = mirror;
-  const double now = api->now();
-  if (!m.enabled) {
-    if (m.active >= 0) Stop(u8"未启用");
-    return;
-  }
-  if (m.active >= 0 && m.active != m.slot) Stop(nullptr);
-  if (m.active < 0) {
-    if (now < m.retryAt) return;
+// ---- 本地镜像（第 1 步） ----
+void RunMirror(double now) {
+  auto &m = app;
+  if (m.mirrorSlot >= 0 && m.mirrorSlot != m.slot) StopMirror();
+  if (m.mirrorSlot < 0) {
+    if (now < m.mirrorRetry) return;
     if (!api->acquirePuppet(m.slot)) {
       m.status = api->status();
-      m.retryAt = now + 1;
+      m.mirrorRetry = now + 1;
       return;
     }
-    m.active = m.slot;
+    m.mirrorSlot = m.slot;
     m.history.clear();
   }
-  Sample sample;
-  sample.time = now;
-  sample.pose.size = sizeof(PoserHumanPose);
-  if (api->captureControlled(&sample.pose)) m.history.push_back(sample);
-  else m.status = api->status();
-  Trim(now);
   PoserHumanPose pose{};
-  if (!SampleAt(now - m.delayMs / 1000.0, pose)) return;
-  if (!api->applyPuppet(m.active, &pose, PoserVec3{m.right, m.up, m.forward}, m.yaw)) {
+  pose.size = sizeof(pose);
+  if (api->captureControlled(&pose)) m.history.push(now, pose);
+  else m.status = api->status();
+  const double readAt = now - m.delayMs / 1000.0;
+  m.history.trim(readAt - .5);
+  if (!m.history.sample(readAt, pose)) return;
+  if (!api->applyPuppet(m.mirrorSlot, &pose, PoserVec3{m.right, m.up, m.forward}, m.yaw)) {
     m.status = api->status();
-    m.active = -1; // The host may already have handed the member back.
+    m.mirrorSlot = -1; // The host may already have handed the member back.
     m.history.clear();
-    m.retryAt = now + 1;
+    m.mirrorRetry = now + 1;
     return;
   }
   char text[96];
-  snprintf(text, sizeof(text), u8"镜像中：第 %d 位（缓冲 %d 帧）", m.active + 1, int(m.history.size()));
+  snprintf(text, sizeof(text), u8"镜像中：第 %d 位（缓冲 %d 帧）", m.mirrorSlot + 1, int(m.history.size()));
   m.status = text;
 }
 
-void OnGui(void *) {
-  auto &m = mirror;
-  api->uiCheckbox(u8"启用人物镜像", &m.enabled);
+// ---- 局域网投影（第 2 步） ----
+void RunNet(double now) {
+  PoserHumanPose own{};
+  own.size = sizeof(own);
+  const bool haveOwn = api->captureControlled(&own) != 0;
+  if (haveOwn) app.session.publish(own);
+  auto views = app.session.sample(now - app.bufferMs / 1000.0);
+  std::sort(views.begin(), views.end(), [](const auto &a, const auto &b) { return a.id < b.id; });
+
+  // Each other player takes the next free slot that is not the controlled one.
+  PoserSquadInfo squad{};
+  squad.size = sizeof(squad);
+  api->getSquad(&squad);
+  std::vector<int> free;
+  for (int s = 0; s < POSER_SQUAD_SLOTS; ++s)
+    if (squad.valid && squad.ready[s] && s != squad.controlledSlot) free.push_back(s);
+  std::map<uint8_t, int> desired;
+  for (size_t k = 0; k < views.size() && k < free.size(); ++k) desired[views[k].id] = free[k];
+  for (auto it = app.assigned.begin(); it != app.assigned.end();) {
+    const auto want = desired.find(it->first);
+    if (want == desired.end() || want->second != it->second) {
+      api->releasePuppet(it->second);
+      it = app.assigned.erase(it);
+    } else {
+      ++it;
+    }
+  }
+
+  app.players.clear();
+  char line[192];
+  for (size_t k = 0; k < views.size(); ++k) {
+    const auto &view = views[k];
+    const auto want = desired.find(view.id);
+    if (want == desired.end()) {
+      snprintf(line, sizeof(line), u8"#%d %s：小队没有空位，未显示", view.id, view.name);
+      app.players.push_back(line);
+      continue;
+    }
+    const int slot = want->second;
+    if (!app.assigned.count(view.id)) {
+      if (now < app.retryAt[slot]) continue;
+      if (!api->acquirePuppet(slot)) {
+        app.retryAt[slot] = now + 1;
+        snprintf(line, sizeof(line), u8"#%d %s：%s", view.id, view.name, api->status());
+        app.players.push_back(line);
+        continue;
+      }
+      app.assigned[view.id] = slot;
+    }
+    PoserHumanPose pose = view.pose;
+    if (app.placement == 1 && haveOwn) {
+      const PoserVec3 side = mirror_pose::Rotate(own.bodyRotation, PoserVec3{1.2f * float(k + 1), 0, 0});
+      pose.rootPosition = {own.rootPosition.x + side.x, own.rootPosition.y + side.y, own.rootPosition.z + side.z};
+    }
+    if (!api->applyPuppet(slot, &pose, PoserVec3{0, 0, 0}, 0)) {
+      app.assigned.erase(view.id);
+      app.retryAt[slot] = now + 1;
+      snprintf(line, sizeof(line), u8"#%d %s：%s", view.id, view.name, api->status());
+      app.players.push_back(line);
+      continue;
+    }
+    if (haveOwn && app.placement == 0)
+      snprintf(line, sizeof(line), u8"#%d %s → 第 %d 位，距离 %.0f 米", view.id, view.name, slot + 1,
+               mirror_pose::Distance(own.rootPosition, view.pose.rootPosition));
+    else
+      snprintf(line, sizeof(line), u8"#%d %s → 第 %d 位", view.id, view.name, slot + 1);
+    app.players.push_back(line);
+  }
+  // Keep a local message (bad port, missing IP) until a session is started.
+  if (app.session.running()) app.status = app.session.status();
+}
+
+void OnFrame(void *) {
+  if (app.mode != app.applied) SwitchMode();
+  if (app.connect && (app.mode == Host || app.mode == Join)) Connect();
+  const double now = Now();
+  if (app.mode == Mirror) RunMirror(now);
+  else if (app.mode == Host || app.mode == Join) RunNet(now);
+}
+
+void DrawMirror() {
   PoserSquadInfo squad{};
   squad.size = sizeof(squad);
   api->getSquad(&squad);
@@ -140,21 +215,46 @@ void OnGui(void *) {
              i == squad.controlledSlot ? u8"（操控中）" : "");
     items[i] = labels[i];
   }
-  api->uiCombo(u8"投影到##slot", &m.slot, items, POSER_SQUAD_SLOTS);
-  api->uiSliderFloat(u8"右侧距离 (米)", &m.right, -3, 3, "%.2f");
-  api->uiSliderFloat(u8"前方距离 (米)", &m.forward, -3, 3, "%.2f");
-  api->uiSliderFloat(u8"高度 (米)", &m.up, -1, 1, "%.2f");
-  api->uiSliderFloat(u8"朝向偏移 (度)", &m.yaw, -180, 180, "%.0f");
-  api->uiSliderFloat(u8"模拟延迟 (毫秒)", &m.delayMs, 0, 2000, "%.0f");
+  api->uiCombo(u8"投影到##slot", &app.slot, items, POSER_SQUAD_SLOTS);
+  api->uiSliderFloat(u8"右侧距离 (米)", &app.right, -3, 3, "%.2f");
+  api->uiSliderFloat(u8"前方距离 (米)", &app.forward, -3, 3, "%.2f");
+  api->uiSliderFloat(u8"高度 (米)", &app.up, -1, 1, "%.2f");
+  api->uiSliderFloat(u8"朝向偏移 (度)", &app.yaw, -180, 180, "%.0f");
+  api->uiSliderFloat(u8"模拟延迟 (毫秒)", &app.delayMs, 0, 2000, "%.0f");
   if (api->uiButton(u8"恢复默认")) {
-    m.right = 1.2f;
-    m.up = m.forward = m.yaw = m.delayMs = 0;
+    app.right = 1.2f;
+    app.up = app.forward = app.yaw = app.delayMs = 0;
   }
-  api->uiTextDisabled(m.status.c_str());
-  api->uiTextDisabled(u8"多人 MMD 播放、切换操控角色或小队变化时，会自动恢复该队员。");
+}
+void DrawNet() {
+  api->uiInputText(u8"玩家名", app.name, sizeof(app.name));
+  if (app.mode == Join) api->uiInputText(u8"主机 IP", app.address, sizeof(app.address));
+  api->uiInputText(u8"端口", app.port, sizeof(app.port));
+  if (api->uiButton(app.session.running() ? u8"重新连接（应用上面的修改）" : u8"连接")) app.connect = true;
+  static const char *const placements[] = {u8"世界坐标（需在同一地图）", u8"跟在我身边"};
+  api->uiCombo(u8"显示位置", &app.placement, placements, 2);
+  api->uiSliderFloat(u8"缓冲延迟 (毫秒)", &app.bufferMs, 0, 500, "%.0f");
+  api->uiSeparator();
+  if (app.players.empty()) api->uiTextDisabled(u8"暂无其他玩家");
+  for (const auto &line : app.players) api->uiText(line.c_str());
+  if (app.mode == Host)
+    api->uiTextDisabled(u8"其他人在同一局域网内输入上面的本机地址加入。首次开启时，"
+                        u8"请在 Windows 防火墙弹窗中允许“专用网络”访问。");
+  api->uiTextDisabled(u8"每名其他玩家显示在小队的一个空闲、非操控位置上（最多 3 人）。");
+}
+void OnGui(void *) {
+  static const char *const modes[] = {u8"关闭", u8"本地镜像", u8"局域网 · 创建主机", u8"局域网 · 加入主机"};
+  api->uiCombo(u8"模式", &app.mode, modes, 4);
+  if (app.mode == Mirror) DrawMirror();
+  else if (app.mode == Host || app.mode == Join) DrawNet();
+  api->uiTextDisabled(app.status.c_str());
+  api->uiTextDisabled(u8"多人 MMD 播放、切换操控角色或小队变化时，被接管的队员会自动恢复。");
+  api->uiSeparator();
+  api->uiTextDisabled(u8"本扩展按 AGPL-3.0 开源，源码：");
+  api->uiTextDisabled(kSource);
 }
 
-DWORD WINAPI Connect(LPVOID) {
+DWORD WINAPI ConnectHost(LPVOID) {
   // poser.dll may load after this DLL; wait up to two minutes for it.
   for (int attempt = 0; attempt < 240; ++attempt, Sleep(500)) {
     HMODULE host = nullptr;
@@ -162,12 +262,17 @@ DWORD WINAPI Connect(LPVOID) {
     if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_PIN, L"poser.dll", &host)) continue;
     auto get = reinterpret_cast<PoserGetExtensionApiFn>(GetProcAddress(host, POSER_EXTENSION_ENTRY));
     const PoserExtensionApi *found = get ? get(POSER_EXTENSION_API_VERSION) : nullptr;
+    // Requires every field this build uses, including uiInputText.
     if (!found || found->size < sizeof(PoserExtensionApi)) {
       OutputDebugStringW(L"poser_mirror: poser.dll has no compatible extension API\n");
       return 0;
     }
     api = found;
-    PoserExtensionDesc desc{sizeof(desc), u8"人物镜像（联机投影 · 第 1 步）", nullptr, OnFrame, OnGui};
+    LARGE_INTEGER t;
+    QueryPerformanceCounter(&t);
+    snprintf(app.name, sizeof(app.name), u8"玩家%04d", int(t.QuadPart % 10000));
+    snprintf(app.port, sizeof(app.port), "%u", unsigned(mirror_net::kDefaultPort));
+    PoserExtensionDesc desc{sizeof(desc), u8"人物镜像 / 局域网投影", nullptr, OnFrame, OnGui};
     api->log(api->registerExtension(&desc) ? "poser_mirror registered" : "poser_mirror registration failed");
     return 0;
   }
@@ -179,7 +284,7 @@ DWORD WINAPI Connect(LPVOID) {
 BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID) {
   if (reason == DLL_PROCESS_ATTACH) {
     DisableThreadLibraryCalls(module);
-    if (HANDLE thread = CreateThread(nullptr, 0, Connect, nullptr, 0, nullptr)) CloseHandle(thread);
+    if (HANDLE thread = CreateThread(nullptr, 0, ConnectHost, nullptr, 0, nullptr)) CloseHandle(thread);
   }
   return TRUE;
 }
