@@ -113,12 +113,15 @@ static void HandleRequest(SOCKET c, const std::string &path,
         {"ready",s.roster.members[i].animator!=nullptr},{"file",slot.file},{"status",slot.status},
         {"calibrated",slot.calibrated},{"calibration",slot.calibration},
         {"active",a!=nullptr},{"bones",a?a->bones.size():0},
+        {"terrain_status",a?a->saved.terrain.status:""},{"terrain_root",a?a->saved.terrain.rootOffset:0},
+        {"terrain_contacts",a?a->saved.terrain.contacts:0},
         {"face_ready",a&&a->face&&a->face->smcOwnershipVerified},
         {"offset",{slot.offset.x,slot.offset.y,slot.offset.z}}});
     }
     HttpJson(c,{{"active",s.active},{"pending",s.pending.active},{"loading",s.loading},
       {"state",int(s.timeline.state)},{"frame",s.timeline.seconds*30},{"last_frame",s.timeline.duration*30},
       {"status",s.status},{"roster_status",poser_squad::status},{"roster_valid",s.roster.valid},
+      {"terrain_enabled",s.terrain.enabled},{"auto_scale",s.autoScale},{"gaze_camera",poser_gaze::motionLock},
       {"origin",{s.anchor.origin.x,s.anchor.origin.y,s.anchor.origin.z}},{"slots",slots}});
     return;
   }
@@ -148,6 +151,10 @@ static void HandleRequest(SOCKET c, const std::string &path,
       {"camera_settings",mmd::WriteCameraSettings(m.cameraSettings)},
       {"hotkey_target",g_mmdSquadBridge.hotkeyTarget&&g_mmdSquadBridge.hotkeyTarget()?"squad":"single"},
       {"in_place",m.inPlace},{"scale",m.scale},{"status",m.status},
+      {"auto_scale",m.autoScale},{"terrain_enabled",m.terrain.enabled},
+      {"terrain_status",m.session.terrain.status},{"terrain_root",m.session.terrain.rootOffset},
+      {"terrain_contacts",m.session.terrain.contacts},{"terrain_queries",m.session.terrain.queries},
+      {"gaze_camera",poser_gaze::motionLock},{"gaze_strength",poser_gaze::motionStrength},
       {"cloth_enhancement",{{"enabled",s_clothAutoEnabled.load()},
         {"preparing",enhancement.autoPreparing},{"restoring",enhancement.boneRestoring},
         {"authored",enhancement.authoredApplied},{"connections",enhancement.autoConnectionsApplied},
@@ -207,7 +214,9 @@ static void HandleRequest(SOCKET c, const std::string &path,
     if(s_characterProfile)for(int i=0;i<int(s_characterBinding.slots.size());++i)
       if(s_characterBinding.slots[i]<0)missing.push_back(s_characterProfile->bones[i].name);
     HttpJson(c,{{"model",CurrentCharModelKey()},{"generation",s_faceGeneration},{"ready",s_characterBinding.ready},
-      {"status",s_characterBinding.status},{"bones",bones},{"missing",missing}});return;
+      {"status",s_characterBinding.status},{"bones",bones},{"missing",missing},
+      {"gaze",{{"model",poser_gaze::editor.modelKey},{"pmx_reference",poser_gaze::binding.pmxReference},
+        {"estimated_limits",poser_gaze::binding.estimatedLimits},{"settings",eye_gaze::WriteProfile(poser_gaze::ProfileFor())}}}});return;
   }
   if (path == "/api/allbones") {
     // 全骨骼（含手指/配饰等），供 Blender 桥接构建完整 Armature

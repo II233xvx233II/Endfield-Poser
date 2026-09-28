@@ -347,7 +347,7 @@ static void DrawPoserGuiBody() {
     // 只在真的装了 XXMI/3DMigoto 时才提示撞键，避免没装的用户被无谓打扰
     if (g_hotkeyConflict && g_xxmiDetected)
       ImGui::TextDisabled("\u26a0 %s", g_hotkeyConflictMsg);
-    if (ImGui::CollapsingHeader(u8"\u5feb\u6377\u952e\uff08\u53ef\u6539\uff09")) {
+    if (ImGui::CollapsingHeader(u8"快捷键设置")) {
       DrawHotkeySetting(u8"\u547c\u51fa / \u9690\u85cf\u9762\u677f",
                         "gui_toggle_key", &g_guiToggleVK, &g_guiToggleCtrl, 1);
       DrawHotkeySetting(u8"\u51bb\u7ed3 / \u89e3\u51bb", "freeze_key",
@@ -361,7 +361,6 @@ static void DrawPoserGuiBody() {
                           u8"\u4f60\u60f3\u7528\u7684\u7ec4\u5408\uff08\u81ea\u52a8"
                           u8"\u5199\u56de poser_config.txt\uff09");
     }
-    ImGui::SameLine();
     ImGui::Checkbox(u8"锁定窗口", &g_pinPanels);
     if (ImGui::IsItemHovered())
       ImGui::SetTooltip(u8"\u9501\u5b9a\u9762\u677f\u4f4d\u7f6e\uff1a\u62d6\u706b\u67f4\u4eba\u65f6\u7a97\u53e3\u4e0d\u8ddf\u7740\u52a8\uff1b\u53d6\u6d88\u540e\u53ef\u62d6\u6807\u9898\u79fb\u52a8");
@@ -370,19 +369,17 @@ static void DrawPoserGuiBody() {
       g_pinPanels = false;
       g_resetPanelLayoutFrames = 2;
     }
-    ImGui::TextDisabled(u8"拖动标题栏移动窗口；布局会自动保存");
+    ImGui::TextDisabled(u8"按住 Alt 操作面板；拖动标题栏调整布局");
     ImGui::Separator();
-    ImGui::Text("Animator=%p  Bones=%d", g_charAnimator, s_humanBoneCount);
-    ImGui::Separator();
+    ImGui::TextDisabled(g_charAnimator?u8"当前角色已就绪":u8"等待进入角色场景");
     ImGui::Checkbox(u8"\u663e\u793a\u9aa8\u9abc", &g_showBones);
     ImGui::SameLine();
     ImGui::Checkbox(u8"\u9aa8\u9abc\u53c2\u6570", &g_showBoneParams);
     if (ImGui::IsItemHovered())
       ImGui::SetTooltip(u8"\u6253\u5f00\u9aa8\u9abc\u53c2\u6570\u7a97\u53e3\uff08\u65cb\u8f6c/\u4f4d\u7f6e\u6ed1\u6761\u3001\u6570\u503c\u8f93\u5165\u3001\u590d\u4f4d\u3001\u64a4\u9500\uff09");
     ImGui::SameLine();
-    ImGui::TextDisabled(
+    ImGui::TextDisabled("%s",
         g_selectedName[0] ? g_selectedName : u8"\u672a\u9009\u4e2d");
-    ImGui::Text("Bones=%d  Overlay: %s", s_humanBoneCount, g_overlayStatus);
     ImGui::Checkbox(u8"\u5168\u91cf\u9aa8\u9abc(\u5fae\u8c03)", &g_fullBones);
     if (ImGui::IsItemHovered())
       ImGui::SetTooltip(u8"\u9ed8\u8ba4\u53ea\u663e\u793a\u4e3b\u8981\u9aa8\u9abc\uff1b\u52fe\u9009\u540e\u53e0\u52a0\u5c42\u5c55\u793a/\u53ef\u62fe\u53d6\u6240\u6709\u9aa8\u9abc\uff08\u542b\u624b\u6307\u7b49\uff09\uff0c\u7528\u4e8e\u7cbe\u7ec6\u5fae\u8c03\u3002");
@@ -393,7 +390,7 @@ static void DrawPoserGuiBody() {
     ImGui::Separator();
     ImGui::Checkbox(u8"MMD 播放器", &g_mmd.show);
     ImGui::Checkbox(u8"MMD 多人播放器", &g_squad.show);
-    if (ImGui::Button(g_frozen ? "Unfreeze" : "Freeze Character")) {
+    if (ImGui::Button(g_frozen ? u8"解冻角色" : u8"冻结角色")) {
       bool wasPlaying = MmdOwnsPose();
       if (wasPlaying) MmdStop();
       Log("[GUI] Freeze button clicked (frozen=%d animator=%p bones=%d)",
@@ -428,21 +425,6 @@ static void DrawPoserGuiBody() {
       }
     }
     ImGui::EndDisabled();
-    // 快捷键一览（默认展开，可折叠）
-    ImGui::Separator();
-    if (ImGui::CollapsingHeader(u8"\u5feb\u6377\u952e",
-                                ImGuiTreeNodeFlags_DefaultOpen)) {
-      char vkbuf[48];
-      HotkeyDisplay(g_guiToggleVK, g_guiToggleCtrl, vkbuf, sizeof(vkbuf));
-      ImGui::Text(u8"\u9762\u677f\u663e\u793a/\u9690\u85cf\uff1a%s",
-                  vkbuf);
-      char fbuf[48];
-      HotkeyDisplay(g_freezeVK, g_freezeCtrl, fbuf, sizeof(fbuf));
-      ImGui::Text(u8"\u51bb\u7ed3 / \u89e3\u51bb\uff1a%s",
-                  fbuf);
-      DrawMmdHotkeyHints();
-      ImGui::Text(u8"\u9762\u677f\u4ea4\u4e92\uff1a\u6309\u4f4f Alt\uff08\u6216\u6e38\u620f\u653e\u5f00\u5149\u6807\u65f6\u76f4\u63a5\u70b9\uff09");
-    }
     // 根骨骼位置微调（整体位移；冻结态直接写回）
     void *rootT = nullptr;
     for (size_t i = 0; i < s_allBones.size(); i++)
@@ -452,7 +434,7 @@ static void DrawPoserGuiBody() {
       }
     if (!rootT && s_humanBoneCount > 0)
       rootT = s_humanBones[0].transform; // 回退：Hips
-    if (g_frozen && rootT && !MmdOwnsPose()) {
+    if (g_frozen && rootT && !MmdOwnsPose() && ImGui::CollapsingHeader(u8"人物位置微调")) {
       Vec3 lp = GetBoneLocalPos(rootT);
       // 必须用连续数组：SliderFloat3/InputFloat3 是按 &v[0] 连续写 3 个 float，
       // 之前用三个独立局部变量（&vx/&vy/&vz）不保证在栈上相邻 → 显示与写回错位。
@@ -482,6 +464,10 @@ static void DrawPoserGuiBody() {
       if (changed) {
         SetBoneLocalPos(rootT, Vec3{rp[0], rp[1], rp[2]});
       }
+    }
+    if(ImGui::CollapsingHeader(u8"诊断信息")) {
+      ImGui::Text("Animator=%p  Bones=%d",g_charAnimator,s_humanBoneCount);
+      ImGui::TextWrapped("Overlay: %s",g_overlayStatus);
     }
   }
   ImGui::End();
@@ -785,6 +771,7 @@ static DWORD WINAPI InitThread(LPVOID) {
   Log("[POSER] === Endfield Poser v%s attached (build %s %s) ===",
       POSER_VERSION, __DATE__, __TIME__);
   LoadPoserConfig();
+  poser_gaze::LoadProfiles();
   ClothInitializeHost();
   poser_agreement::state.load(PoserFilePath(poser_agreement::kFileName));
   Log("[AGREEMENT] revision %d: %s", poser_agreement::kRevision,
@@ -830,8 +817,8 @@ static DWORD WINAPI InitThread(LPVOID) {
   InitGameHooks(); // Task 2.1：SetMainCharacter hook → 捕获 Animator/Entity
   g_characterFramePulse=[](){SampleGameRenderFrame(3);};
   mmd_camera::framePulse=[](){SampleGameRenderFrame(4);};
-  mmd_camera::needsCamera=[](){return poser_gaze::settings.mode==eye_gaze::Mode::Camera;};
-  mmd_camera::afterCamera=[](void *camera){poser_gaze::SetCamera(camera);SMCGazeTick();};
+  mmd_camera::needsCamera=[](){return poser_gaze::motionLock||poser_gaze::settings.mode==eye_gaze::Mode::Camera;};
+  mmd_camera::afterCamera=SMCGazeCameraTick;
   InstallSMCFaceHooks(); // Task 4.2：SkeletalMorph 表情 hook（参照 EIEM smc_face.h）
   s_clothThreadId = []() -> DWORD {
     DWORD observed=g_frameGameThreadId.load();

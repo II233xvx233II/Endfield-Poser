@@ -385,10 +385,12 @@ public:
     };
     basis_ = NormQ(BodyBasis(tp(13), tp(14), tp(0), tp(10)) *
                    Conj(BodyBasis(sp(13), sp(14), sp(0), sp(10))));
-    float sl = Len(sp(1) - sp(3)) + Len(sp(3) - sp(5)),
-          tl = Len(tp(1) - tp(3)) + Len(tp(3) - tp(5));
-    suggestedScale =
-        source.builtin ? .08f : (sl > 1e-5f ? tl / sl : .08f);
+    float sl=0,tl=0;
+    for(int side=0;side<2;++side) {
+      sl+=Len(sp(1+side)-sp(3+side))+Len(sp(3+side)-sp(5+side));
+      tl+=Len(tp(1+side)-tp(3+side))+Len(tp(3+side)-tp(5+side));
+    }
+    suggestedScale=sl>1e-5f&&tl>1e-5f?Clamp(tl/sl,.001f,.3f):.08f;
     const int child[55] = {7,  3,  4,  5,  6,  19, 20, 8,  54, 10, -1,
                            13, 14, 15, 16, 17, 18, 30, 45, -1, -1, -1,
                            -1, -1, 25, 26, -1, 28, 29, -1, 31, 32, -1,

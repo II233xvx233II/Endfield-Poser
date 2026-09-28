@@ -100,16 +100,20 @@ def read_pmx(path):
     bones = []
     for _ in range(r.count(8192, 8)):
         b = {'name': r.text(enc), 'english': r.text(enc), 'rest': r.get('3f'), 'parent': r.index(bi)}
-        r.get('i'); flags = r.get('H'); r.raw(bi if flags & 1 else 12)
-        if flags & 0x300: r.raw(bi+4)
-        if flags & 0x400: r.raw(12)
-        if flags & 0x800: r.raw(24)
+        b['layer']=r.get('i'); flags = b['flags'] = r.get('H')
+        b['tail'] = r.index(bi) if flags & 1 else r.get('3f')
+        if flags & 0x300: b['append']=(r.index(bi),r.get('f'))
+        if flags & 0x400: b['fixed_axis']=r.get('3f')
+        # Some references contain unused NaNs in optional axes. Preserve this
+        # metadata for diagnostics without rejecting otherwise valid face data.
+        if flags & 0x800: b['local_axes']=struct.unpack('<6f',r.raw(24))
         if flags & 0x2000: r.raw(4)
         if flags & 0x20:
-            r.raw(bi+8)
+            b['ik']={'target':r.index(bi),'iterations':r.get('i'),'angle':r.get('f'),'links':[]}
             for _ in range(r.count(256, bi+1)):
-                r.raw(bi)
-                if r.get('B'): r.raw(24)
+                link={'bone':r.index(bi)}
+                if r.get('B'): link['limits']=(r.get('3f'),r.get('3f'))
+                b['ik']['links'].append(link)
         bones.append(b)
     if np.any(indices >= len(bones)) or np.any(weights < -1e-5) or np.any(weights > 1.00001):
         raise ValueError('Invalid PMX skinning weights')

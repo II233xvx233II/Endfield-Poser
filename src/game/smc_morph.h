@@ -142,7 +142,7 @@ static void SMCFaceSelectProfile(std::shared_ptr<const character_face::Profile> 
 
 
 static void SMCFaceInvalidate() {
-  if(s_activeSMC==&s_editorSMC) poser_gaze::Reset();
+  poser_gaze::Reset(true,SMCGazeContext());
   s_manualFace={};
   s_faceNodes.clear();s_characterBinding={};s_characterProfile.reset();s_characterModel.clear();s_characterBindingGeneration=0;
   s_faceHierarchy={};s_faceBindingRevision=-1;++s_faceGeneration;
@@ -1048,7 +1048,7 @@ static void SMCRestoreBigList() {
 }
 
 static void SMCReleaseFreeze() {
-  poser_gaze::Release();
+  poser_gaze::Release(true,nullptr,SMCGazeContext());
   SMCAutomation().release();
   if (s_wasFrozen && CharAnimatorAlive()) SMCRestoreBigList();
   s_wasFrozen=false;
@@ -1423,7 +1423,6 @@ static bool SMCFaceIdentity(void *transform,char *name,void **parent) {
 // Called once per neutral capture / skeleton revision on the SMC owner thread.
 // No game objects are accessed by Evaluate(), nor by background file loaders.
 static void SMCGazeBind(Vec3 origin,const std::vector<void *> &parents) {
-  if(s_activeSMC!=&s_editorSMC)return;
   poser_gaze::Binding b;b.owner=SMCAnimator();b.generation=s_faceGeneration;
   for(const auto &bone:SMCBones()) {
     auto name=face_geometry::Canonical(bone.name);
@@ -1436,6 +1435,7 @@ static void SMCGazeBind(Vec3 origin,const std::vector<void *> &parents) {
      !std::isfinite(QuatLen(headRot))||QuatLen(headRot)<.5f)return;
   Vec3 eyes[2],iris[2],mouth;bool haveIris[2]={};int mouthCount=0;
   auto inverse=Conj(NormQ(headRot));
+  b.neutralHeadInverse=inverse;
   for(int i=0;i<int(s_faceNodes.size());++i) {
     auto name=face_geometry::Canonical(s_faceNodes[i].name);
     auto point=inverse*(s_faceNodes[i].neutral.position()+origin-headPos);
@@ -1458,24 +1458,36 @@ static void SMCGazeBind(Vec3 origin,const std::vector<void *> &parents) {
     b.opticalReady=Len(optical)>.9f;
   }
   b.basis=eye_gaze::Calibrate(eyes[0],eyes[1],mouth*(1.f/mouthCount),{},optical);
-  poser_gaze::binding=b;
+  b.fallbackBasis=b.basis;
+  SMCGazeContext().binding=b;
   Log("[GAZE] neutral eyes ready=%d optical=%d generation=%llu",b.basis.ready,b.opticalReady,(unsigned long long)b.generation);
 }
 static void SMCGazeTick() {
-  if(s_activeSMC!=&s_editorSMC)return;
-  Quat fallback[2];bool haveFallback=poser_gaze::lease.active;
+  auto &gaze=SMCGazeContext();
+  Quat fallback[2];bool haveFallback=gaze.lease.active;
   for(int e=0;e<2;++e) {
-    fallback[e]=poser_gaze::lease.original[e];
+    fallback[e]=gaze.lease.original[e];
     if(s_driving&&SMCFrozen()&&s_faceBoneEvalOk)for(int i=0;i<s_faceBoneCount;++i)
-      if(s_faceBones[i].transform==poser_gaze::binding.eyes[e]) {
+      if(s_faceBones[i].transform==gaze.binding.eyes[e]) {
         const auto &b=s_faceBones[i];fallback[e]={b.rx,b.ry,b.rz,b.rw};break;
       }
     if(s_motionFaceCurrent.active&&s_motionFaceCurrent.animator==SMCAnimator()&&
        s_motionFaceCurrent.generation==s_faceGeneration&&s_motionFaceCurrent.eyeDriven[e]&&
-       s_motionFaceCurrent.eyes[e]==poser_gaze::binding.eyes[e])fallback[e]=s_motionFaceCurrent.eyeRotation[e];
+       s_motionFaceCurrent.eyes[e]==gaze.binding.eyes[e])fallback[e]=s_motionFaceCurrent.eyeRotation[e];
+  }
+  auto settings=gaze.settings;
+  settings.profile=poser_gaze::ProfileFor(gaze);
+  if(s_motionFaceCurrent.active&&s_motionFaceCurrent.gazeCamera&&s_motionFaceCurrent.animator==SMCAnimator()&&
+     s_motionFaceCurrent.generation==s_faceGeneration) {
+    settings.mode=eye_gaze::Mode::Camera;settings.strength=s_motionFaceCurrent.gazeStrength;
   }
   poser_gaze::Update(SMCFrozen()&&s_faceBonesCaptured&&!s_captureNeutral&&s_smcOwnershipVerified,
-                     s_faceGeneration,haveFallback?fallback:nullptr);
+                     s_faceGeneration,haveFallback?fallback:nullptr,gaze,SMCAnimator(),&settings);
+}
+static void SMCGazeCameraTick(void *camera) {
+  poser_gaze::SetCamera(camera);
+  {SMCActorScope scope(&s_editorSMC);SMCGazeTick();}
+  for(auto actor:s_squadSMC)if(actor&&actor!=&s_editorSMC) {SMCActorScope scope(actor);SMCGazeTick();}
 }
 static void SMCFaceBind() {
   if(!s_faceBonesCaptured||s_captureNeutral||s_faceBoneCount<=0||
@@ -1553,6 +1565,7 @@ static void SMCFaceBind() {
   } catch(...) {s_faceNodes.clear();s_characterBinding={};s_faceHierarchy={};Log("[FACE] neutral binding failed");}
 }
 static void SMCFaceSelectProfile(std::shared_ptr<const character_face::Profile> profile,const std::string &model) {
+  auto &gaze=SMCGazeContext();gaze.modelKey=character_face::ModelKey(model);
   if(profile==s_characterProfile&&model==s_characterModel&&s_characterBindingGeneration==s_faceGeneration)return;
   s_characterProfile=std::move(profile);s_characterModel=model;s_characterBinding={};
   if(!s_faceHierarchy.ready){s_characterBindingGeneration=0;return;}
@@ -1563,6 +1576,9 @@ static void SMCFaceSelectProfile(std::shared_ptr<const character_face::Profile> 
       s_characterProfile->key.c_str(),s_characterBinding.ready,s_characterBinding.matched,
       s_characterBinding.usableCount,s_characterBinding.error);
   }
+  const auto *reference=s_characterProfile&&s_characterBinding.ready?&s_characterProfile->gaze:nullptr;
+  auto forward=reference?gaze.binding.neutralHeadInverse*face_geometry::Vector(s_characterBinding.basis,reference->forward):Vec3{};
+  poser_gaze::ApplyReference(gaze,reference,forward);
 }
 
 static bool SMCMotionActive() {
@@ -2178,7 +2194,7 @@ static void InstallSMCFaceHooks() {
 
 // 角色切换 / 停止驱动时重置（把大列表还回游戏）
 static void ResetSMCState(bool restoreOriginal = true) {
-  if(s_activeSMC==&s_editorSMC) poser_gaze::Reset(restoreOriginal);
+  poser_gaze::Reset(restoreOriginal,SMCGazeContext());
   SMCAutomation().release(restoreOriginal);
   s_wasFrozen = false;
   SMCFaceInvalidate();

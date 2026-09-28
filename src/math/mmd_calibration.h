@@ -25,7 +25,7 @@ inline bool BodyCalibrationRole(int role) {return role>=0&&role!=21&&role!=22&&r
 // or weapon/effect/LOD nodes. The full live profile stays indexed to its rig.
 inline bool RestoreBodyCalibration(const RetargetProfile &saved,RetargetProfile &live) {
   if(saved.model!=live.model||!saved.valid()||live.bones.empty())return false;
-  if(saved.fingerprint!=live.fingerprint&&saved.bones.size()==live.bones.size()) {
+  if(saved.fingerprint!=live.fingerprint&&live.fingerprint.find("hierarchy1-")!=0&&saved.bones.size()==live.bones.size()) {
     bool sameLayout=true;
     for(size_t i=0;i<saved.bones.size();++i) {
       const auto &a=saved.bones[i],&b=live.bones[i];

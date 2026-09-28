@@ -39,11 +39,13 @@ static void DrawMmdFaceSection() {
   ImGui::SameLine();ImGui::TextDisabled(u8"可叠加多个表情");
   ImGui::EndDisabled();
   const char *groups[]={"",u8"眉毛",u8"眼睛",u8"嘴部",u8"其他"};
+  int unavailable=0;for(const auto &c:face.controls)if(!SMCManualSource(c))++unavailable;
+  if(unavailable)ImGui::TextDisabled(u8"已隐藏 %d 项当前角色不可用的表情",unavailable);
   for(int group=1;group<=4;++group) {
     int visible=0;
     for(int i=0;i<int(face.controls.size());++i) {
       const auto &c=face.controls[i];auto label=mmd_face_controls::Label(c.name,c.panel,i);
-      if(c.panel==group&&(!g_mmdFaceFilter[0]||strstr(label.c_str(),g_mmdFaceFilter)||strstr(c.name.c_str(),g_mmdFaceFilter)))++visible;
+      if(SMCManualSource(c)&&c.panel==group&&(!g_mmdFaceFilter[0]||strstr(label.c_str(),g_mmdFaceFilter)||strstr(c.name.c_str(),g_mmdFaceFilter)))++visible;
     }
     if(!visible)continue;
     ImGui::PushID(group);
@@ -55,6 +57,7 @@ static void DrawMmdFaceSection() {
         const auto &c=face.controls[i];auto label=mmd_face_controls::Label(c.name,c.panel,i);
         if(c.panel!=group||(g_mmdFaceFilter[0]&&!strstr(label.c_str(),g_mmdFaceFilter)&&!strstr(c.name.c_str(),g_mmdFaceFilter)))continue;
         int source=SMCManualSource(c);
+        if(!source)continue;
         ImGui::PushID(i);
         ImGui::TextUnformatted(label.c_str());
         if(ImGui::IsItemHovered()) {
@@ -64,7 +67,6 @@ static void DrawMmdFaceSection() {
             ImGui::TextWrapped("%s",face.profile->morphs[c.morph].reason.c_str());
           ImGui::EndTooltip();
         }
-        if(!source){ImGui::SameLine();ImGui::TextDisabled(u8"（不可用）");}
         ImGui::BeginDisabled(playing||!g_frozen||!ready||!source);
         float value=face.weights[i];
         ImGui::SetNextItemWidth((std::max)(60.f,ImGui::GetContentRegionAvail().x-48.f));
@@ -82,20 +84,20 @@ static void DrawMmdFaceSection() {
 static void DrawSMCSection() {
   if (!SMCSectionReady()) {
     if (s_smcClass)
-      ImGui::TextDisabled(u8"SMC \u521d\u59cb\u5316\u4e2d\uff08\u8bf7\u5148\u51bb\u7ed3\u89d2\u8272\uff09");
+      ImGui::TextDisabled(u8"表情准备中，请先冻结角色");
     else
-      ImGui::TextDisabled(u8"\u6e38\u620f\u539f\u751f SMC \u672a\u627e\u5230\uff0c\u53ea\u7528 BlendShape");
+      ImGui::TextDisabled(u8"当前角色的游戏表情尚未就绪");
     return;
   }
 
   bool open = ImGui::CollapsingHeader(
-      u8"\u6e38\u620f\u539f\u751f\u8868\u60c5 (SMC)",
+      u8"游戏表情",
       ImGuiTreeNodeFlags_DefaultOpen);
   if (!open)
     return;
 
   bool driving = SMCFaceDriving();
-  if (ImGui::Checkbox(u8"\u542f\u7528 SMC \u9a71\u52a8", &driving))
+  if (ImGui::Checkbox(u8"应用手动表情", &driving))
     SMCFaceSetDriving(driving);
   ImGui::SameLine();
   if (ImGui::SmallButton(u8"\u5168\u90e8\u5f52\u96f6")) {
@@ -115,7 +117,7 @@ static void DrawSMCSection() {
     ImGui::TextDisabled("%s", readStatus);
   ImGui::Separator();
 
-  ImGui::BeginChild("##smclist", ImVec2(0, 0), false);
+  ImGui::BeginChild("##smclist", ImVec2(0, s_blendShapes.empty()?0.f:260.f), false);
   int count = SMCSliderCount();
   auto catalog=SMCManualCatalog();
   for (int i = 0; i < count; i++) {
@@ -132,16 +134,8 @@ static void DrawSMCSection() {
 
 static void DrawGameMorphPanel() {
   DrawSMCSection();
-  if (s_blendShapes.empty()) {
-    ImGui::TextDisabled(
-        u8"\u672c\u4f5c\u9762\u90e8\u7531 SMC \u9aa8\u9abc\u9a71\u52a8\uff0c\u7f51\u683c\u4e0a"
-        u8"\u6ca1\u6709 BlendShape \u76ee\u6807\uff08\u8be5\u533a\u4e3a\u7a7a\u662f\u6b63\u5e38\u7684\uff09");
-    return;
-  }
-
-  ImGui::Separator();
-  ImGui::TextDisabled(u8"BlendShape\uff08\u672c\u6e38\u620f\u53ef\u80fd\u4e3a\u7a7a\uff09");
-  ImGui::TextDisabled(u8"\u5171 %zu \u4e2a\u5f62\u6001\u952e", s_blendShapes.size());
+  if(s_blendShapes.empty())return;
+  if(!ImGui::CollapsingHeader(u8"其他模型表情"))return;
   ImGui::InputText(u8"\u641c\u7d22##morph", g_morphFilter, sizeof(g_morphFilter));
   ImGui::SameLine();
   if (ImGui::SmallButton(u8"\u6062\u590d\u539f\u59cb")) {
@@ -181,22 +175,60 @@ static void DrawGameMorphPanel() {
 
 static void DrawGazeSection() {
   if(!ImGui::CollapsingHeader(u8"眼睛朝向",ImGuiTreeNodeFlags_DefaultOpen))return;
+  ImGui::Checkbox(u8"MMD 播放时锁定摄像机",&poser_gaze::motionLock);
+  if(poser_gaze::motionLock) {
+    ImGui::SliderFloat(u8"锁定强度",&poser_gaze::motionStrength,0,1,"%.2f",ImGuiSliderFlags_AlwaysClamp);
+    ImGui::TextDisabled(u8"单人 / 多人共用；0 保留动作眼神，1 看向镜头。");
+  }
   bool ready=poser_gaze::binding.basis.ready&&poser_gaze::binding.owner==g_charAnimator&&
       poser_gaze::binding.generation==s_faceGeneration;
-  ImGui::BeginDisabled(!ready);
+  const bool motionOverride=poser_gaze::motionLock&&MmdOwnsPose();
+  if(motionOverride)ImGui::TextDisabled(u8"MMD 锁定生效中，校正与限位仍可调整。");
+  auto profile=poser_gaze::ProfileFor();
+  ImGui::BeginDisabled(!ready||motionOverride);
   int mode=int(poser_gaze::settings.mode);
   ImGui::SetNextItemWidth(-1);
-  if(ImGui::Combo("##gaze-mode",&mode,u8"跟随游戏 / 动作\0手动方向\0自动看向镜头\0"))
+  if(ImGui::Combo("##gaze-mode",&mode,u8"跟随游戏 / 动作\0手动方向\0锁定当前摄像机\0"))
     poser_gaze::settings.mode=eye_gaze::Mode(mode);
   if(mode!=0) {
+    ImGui::SliderFloat(u8"方向控制强度",&poser_gaze::settings.strength,0,1,"%.2f",ImGuiSliderFlags_AlwaysClamp);
+  }
+  if(mode==1) {
     ImGui::SetNextItemWidth((std::max)(70.f,ImGui::GetContentRegionAvail().x-52.f));
-    ImGui::SliderFloat(u8"左右",&poser_gaze::settings.yaw,-30,30,"%.1f°",ImGuiSliderFlags_AlwaysClamp);
+    ImGui::SliderFloat(u8"左右",&poser_gaze::settings.yaw,-profile.limits.left,profile.limits.right,"%.1f°",ImGuiSliderFlags_AlwaysClamp);
     if(ImGui::IsItemHovered())ImGui::SetTooltip(u8"正值向角色右侧，负值向角色左侧");
     ImGui::SetNextItemWidth((std::max)(70.f,ImGui::GetContentRegionAvail().x-52.f));
-    ImGui::SliderFloat(u8"上下",&poser_gaze::settings.pitch,-20,20,"%.1f°",ImGuiSliderFlags_AlwaysClamp);
+    ImGui::SliderFloat(u8"上下",&poser_gaze::settings.pitch,-profile.limits.down,profile.limits.up,"%.1f°",ImGuiSliderFlags_AlwaysClamp);
     if(ImGui::IsItemHovered())ImGui::SetTooltip(u8"正值向上，负值向下");
     if(ImGui::SmallButton(u8"方向归零"))poser_gaze::settings.yaw=poser_gaze::settings.pitch=0;
-    if(mode==2)ImGui::TextWrapped(u8"滑条微调看向镜头的方向；镜头在身后时回到正前方。");
+  }
+  ImGui::EndDisabled();
+  ImGui::BeginDisabled(!ready||poser_gaze::editor.modelKey.empty());
+  if(ImGui::TreeNode(u8"校正与限位（当前角色）")) {
+    ImGui::TextWrapped("%s",poser_gaze::binding.pmxReference?
+      (poser_gaze::binding.estimatedLimits?u8"PMX 虹膜基准 · 眼眶估算限位":u8"PMX 虹膜基准 · 通用限位"):
+      u8"游戏骨骼基准 · 通用限位");
+    bool changed=false,save=false;
+    auto slider=[&](const char *label,float &value,float low,float high) {
+      changed|=ImGui::SliderFloat(label,&value,low,high,"%.1f°",ImGuiSliderFlags_AlwaysClamp);
+      save|=ImGui::IsItemDeactivatedAfterEdit();
+    };
+    slider(u8"镜头左右校正",profile.cameraYaw,-30,30);
+    slider(u8"镜头上下校正",profile.cameraPitch,-20,20);
+    ImGui::TextDisabled(u8"正值向右 / 向上；只修正看向镜头。");
+    slider(u8"向左限位",profile.limits.left,0,30);
+    slider(u8"向右限位",profile.limits.right,0,30);
+    slider(u8"向上限位",profile.limits.up,0,20);
+    slider(u8"向下限位",profile.limits.down,0,20);
+    if(changed)poser_gaze::profiles[poser_gaze::editor.modelKey]=eye_gaze::Sanitize(profile);
+    if(ImGui::SmallButton(u8"恢复角色默认")){poser_gaze::profiles.erase(poser_gaze::editor.modelKey);save=true;}
+    if(save)poser_gaze::SaveProfiles();
+    ImGui::TextWrapped(u8"修改自动按角色保存，单人和多人共用。斜向转动也受限；估算值可按眼型收紧。");
+    if(!poser_gaze::profileError.empty()) {
+      ImGui::TextWrapped("%s",poser_gaze::profileError.c_str());
+      if(ImGui::SmallButton(u8"重试保存"))poser_gaze::SaveProfiles();
+    }
+    ImGui::TreePop();
   }
   ImGui::EndDisabled();
   ImGui::TextWrapped("%s",ready?poser_gaze::status:u8"冻结角色，等待眼睛控制就绪");

@@ -7,6 +7,7 @@
 #define SMC_SNAPSHOT_MAX 4096
 struct SMCMotionFrame {
   bool active=false; void* animator=nullptr; float weights[(SMC_NUM_MOUTH + 32)]={};
+  bool gazeCamera=false;float gazeStrength=1;
   void* eyes[2]={}; Quat eyeRotation[2]; bool eyeDriven[2]={};
   uint64_t generation=0;
   face_mixing::Settings settings;
@@ -15,6 +16,7 @@ struct SMCMotionFrame {
   float fallbackWeights[(SMC_NUM_MOUTH + 32)]={};
 };
 struct SMCActorState {
+  poser_gaze::Context gaze;
   void *actor = nullptr, *root = nullptr;
   bool frozen = true;
   int revision = 0;
@@ -184,6 +186,7 @@ struct SMCActorScope {
 static void *SMCAnimator() {return s_activeSMC==&s_editorSMC?g_charAnimator:s_activeSMC->actor;}
 static void *SMCRoot() {return s_activeSMC==&s_editorSMC?GetCharRootTransform():s_activeSMC->root;}
 static bool SMCFrozen() {return s_activeSMC==&s_editorSMC?(g_frozen||s_editorSquadFrozen):s_activeSMC->frozen;}
+static poser_gaze::Context &SMCGazeContext() {return s_activeSMC==&s_editorSMC?poser_gaze::editor:s_activeSMC->gaze;}
 static int SMCRevision() {return s_activeSMC==&s_editorSMC?s_bonesRev:s_activeSMC->revision;}
 static const std::vector<AllBone> &SMCBones() {return s_activeSMC==&s_editorSMC?s_allBones:s_activeSMC->bones;}
 static SMCAutomationPause &SMCAutomation() {return s_activeSMC==&s_editorSMC?s_smcAutomation:s_activeSMC->automation;}

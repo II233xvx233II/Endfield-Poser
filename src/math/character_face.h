@@ -1,5 +1,6 @@
 #pragma once
 #include "math/face_mixing.h"
+#include "math/eye_gaze_profile.h"
 #include <memory>
 #include <set>
 
@@ -16,6 +17,7 @@ struct Morph {
 };
 struct Profile {
   std::string key,label,sourceHash;
+  eye_gaze::Reference gaze;
   std::vector<Bone> bones;
   std::vector<Morph> morphs;
   std::map<std::string,int> names;
@@ -65,6 +67,7 @@ inline Profile Read(const nlohmann::json &j) {
   if(j.value("version",0)!=1)throw std::runtime_error("Unsupported character face profile");
   Profile p;p.key=ModelKey(j.at("model").get<std::string>());p.label=j.at("label").get<std::string>();
   p.sourceHash=j.value("source_hash",std::string{});
+  if(j.contains("gaze"))p.gaze=eye_gaze::ReadReference(j.at("gaze"));
   if(p.key.empty()||p.key.size()>128||p.label.size()>512)throw std::runtime_error("Invalid character face identity");
   const auto &bones=j.at("bones"),&morphs=j.at("morphs");
   if(!bones.is_array()||bones.empty()||bones.size()>face_geometry::MaxBones||

@@ -32,6 +32,8 @@ struct MmdSquadActor {
 struct MmdSquadPlayer {
   bool show=false,hotkeys=false,active=false,refresh=true,loading=false;
   bool inPlace=false,stopRequested=false;
+  bool autoScale=true;
+  mmd_terrain::Settings terrain;
   float scale=.08f,height=0;
   mmd::IkMode ikMode=mmd::IkMode::FollowMotion;
   mmd::Timeline timeline;
@@ -183,13 +185,18 @@ static void MmdSquadLoadActorCalibration(int slot) {
   {
     MmdSquadRigScope view(a.member);s_allBones=a.bones;RebuildHumanBones();
     a.profile=MmdCurrentProfile();
-    if(!MmdLoadCalibration(a.profile)) {
-      s.slots[slot].calibrated=false;s.slots[slot].calibration=u8"缺少有效校准，请完成手动 T 姿并确认保存";
-      throw std::runtime_error(u8"第 "+std::to_string(slot+1)+u8" 位缺少有效校准；请手动切到该角色，在单人面板完成 T 姿校准并确认保存。");
+    bool automatic=MmdBindCalibration(a.profile);
+    if(!automatic&&!MmdLoadCalibration(a.profile)) {
+      s.slots[slot].calibrated=false;s.slots[slot].calibration=u8"Avatar 不完整且缺少备用校准";
+      throw std::runtime_error(u8"第 "+std::to_string(slot+1)+u8" 位无法自动适配；请切到该角色，在单人面板完成备用 T 姿校准。");
     }
   }
   a.mapper.bind(s.rig,s.slots[slot].clip,a.profile,mmd::AdaptedRoles(g_mmd.adaptation),g_mmd.adaptation.tracks);
-  a.scale=(g_mmd.reference && g_mmd.autoScale?a.mapper.suggestedScale:s.scale)*s.slots[slot].scale;
+  a.scale=(s.autoScale?a.mapper.suggestedScale:s.scale)*s.slots[slot].scale;
+  for(const auto &c:a.saved.components) {
+    const auto name=il2cpp_class_get_name(il2cpp_object_get_class(c.component));
+    if(name&&!strcmp(name,"GrounderBipedIK")){mmd_terrain::Configure(a.saved.terrain,c.component);break;}
+  }
   a.editorFace=a.member.animator==g_charAnimator;
   if(a.editorFace) a.face={&s_editorSMC,[](SMCActorState*){}};
   else {
@@ -198,7 +205,7 @@ static void MmdSquadLoadActorCalibration(int slot) {
   }
   MmdSquadFaceMap(a,s.slots[slot].clip);
   {SMCActorScope face(a.face.get());SMCFaceSelectProfile(a.faceProfile,a.profile.model);}
-  s.slots[slot].calibrated=true;s.slots[slot].calibration=u8"已读取保存的校准";
+  s.slots[slot].calibrated=true;s.slots[slot].calibration=a.profile.fingerprint.find("avatar1-")==0?u8"Avatar 自动适配完成":u8"已读取保存的备用校准";
   s.slots[slot].status=u8"骨架与校准就绪";
 }
 static void MmdSquadStop() {
@@ -212,6 +219,7 @@ static void MmdSquadStop() {
     auto &a=*ptr;bool alive=!RuntimeClosing()&&UnityObjAlive(a.saved.animator)&&UnityObjAlive(a.saved.root);
     if(a.face) {
       SMCActorScope scope(a.face.get());SMCMotionPublish({});
+      poser_gaze::Release(false,nullptr,SMCGazeContext());
       if(a.editorFace) {
         if(!RuntimeClosing())SMCMotionConsume();
         if(!g_frozen)SMCAutomation().release(alive);
@@ -259,8 +267,8 @@ static void MmdSquadRefresh() {
 static void MmdSquadPollCalibrations() {
   auto &s=g_squad;
   if(!s.show||s.active||!s.roster.valid||g_mmd.session.active||g_mmd.preview)return;
-  // Read one changed actor per game frame. No preview, pose writes, or automatic
-  // calibration: only the saved profile keyed by this exact model/fingerprint.
+  // One actor per game frame. Avatar metadata requires no pose writes or
+  // manual switching. Saved manual profiles remain an optional fallback.
   for(int i=0;i<4;++i) {
     auto &slot=s.slots[i];auto member=s.roster.members[i];
     if(!member.animator||!UnityObjAlive(member.animator))continue;
@@ -268,8 +276,8 @@ static void MmdSquadPollCalibrations() {
     slot.calibrationAnimator=member.animator;slot.calibrationSerial=s_mmdCalibrationSerial;
     try {
       MmdSquadRigScope view(member);RebuildAllBones();RebuildHumanBones();auto profile=MmdCurrentProfile();
-      slot.calibrated=MmdLoadCalibration(profile);
-      slot.calibration=slot.calibrated?u8"已读取保存的校准":u8"未校准：切到此角色，在单人面板完成手动 T 姿并确认保存";
+      slot.calibrated=MmdBindCalibration(profile)||MmdLoadCalibration(profile);
+      slot.calibration=slot.calibrated?u8"骨架自动适配 / 备用校准已就绪":u8"自动适配失败：请在单人面板完成备用 T 姿校准";
     } catch(...) {slot.calibrated=false;slot.calibration=u8"校准读取失败，请重新读取小队";}
     break;
   }
@@ -312,7 +320,7 @@ static bool MmdSquadStart() {
     for(auto &actor:s.actors)if(actor&&actor->member.animator==g_charAnimator) {originProfile=actor->profile;foundOrigin=true;break;}
     if(!foundOrigin) {
       originProfile=MmdCurrentProfile();
-      if(!MmdLoadCalibration(originProfile))throw std::runtime_error(u8"作为共同原点的当前角色尚未校准，请先手动 T 姿校准并确认保存");
+      if(!MmdBindCalibration(originProfile)&&!MmdLoadCalibration(originProfile))throw std::runtime_error(u8"作为共同原点的当前角色尚未校准，请先手动 T 姿校准并确认保存");
     }
     mmd::Retargeter originMapper;originMapper.bind(s.rig,g_mmd.clip,originProfile,mmd::AdaptedRoles(g_mmd.adaptation),g_mmd.adaptation.tracks);
     void *origin=GetCharRootTransform();s.anchor={GetBoneWorldPos(origin),NormQ(GetBoneWorldRot(origin)*originMapper.sourceBasis())};
@@ -341,8 +349,12 @@ static void MmdSquadApply() {
     for(const auto &bone:a.bones)if(!UnityObjAlive(bone.transform)) {MmdSquadStop();s.status=u8"队员骨架已变化，已停止全部动作";return;}
     for(const auto &component:a.saved.components)MmdEnable(component.component,false);
     a.mapper.sample(frame,a.scale,false,0,s.ikMode,g_mmd.amplitude);
-    const auto &pose=a.mapper.output;
-    const auto placement=s.anchor.place(a.mapper.sourceBasis(),pose.rootOffset,slot.offset,slot.yaw,s.inPlace,s.height+slot.height);
+    auto &pose=a.mapper.output;
+    auto placement=s.anchor.place(a.mapper.sourceBasis(),pose.rootOffset,slot.offset,slot.yaw,s.inPlace,s.height+slot.height);
+    auto base=s.anchor.place(a.mapper.sourceBasis(),{},slot.offset,slot.yaw,false,0);
+    float ground=slot.clip.bones.empty()?0:mmd_terrain::Apply(a.saved.terrain,s.terrain,a.profile,pose,
+      mmd::TRS(placement.position,placement.rotation),mmd::TRS(base.position,base.rotation),MmdNow(),s.timeline.seconds);
+    placement.position.y+=ground;
     if(!MmdSquadWorldPose(a.saved.root,placement.position,placement.rotation)) {MmdSquadStop();s.status=u8"无法设置队员位置，已停止";return;}
     for(size_t j=1;j<pose.write.size()&&j<a.bones.size();++j)if(pose.write[j])
       MmdRawPose(a.bones[j].transform,a.profile.bones[j].localPos,pose.localRot[j]);
@@ -363,7 +375,7 @@ static void MmdSquadApply() {
         a.faceGeneration=s_faceGeneration;a.faceHierarchyReady=s_faceHierarchy.ready;a.libraryCount=g_mmd.faceLibrary.size();
       }
       SMCFaceSelectProfile(a.faceProfile,a.profile.model);
-      SMCMotionFrame face;face.active=true;face.animator=a.member.animator;face.generation=s_faceGeneration;
+      SMCMotionFrame face;face.gazeCamera=poser_gaze::motionLock;face.gazeStrength=poser_gaze::motionStrength;face.active=true;face.animator=a.member.animator;face.generation=s_faceGeneration;
       face.profile=a.faceProfile;face.settings=g_mmd.faceSettings;
       for(const auto &track:a.morphs) {
         const auto &map=track.second;float value=mmd::SampleMorph(slot.clip.morphs.at(track.first),frame);
@@ -389,6 +401,8 @@ static void MmdSquadApply() {
     if(settings.origin==mmd::CameraOrigin::Follow && !target) {
       mmd_camera::Stop();s.status=u8"所选镜头跟随队员未参与，镜头已恢复；可切回固定起点";
     } else {
+      // Fixed cameras also follow the selected dancer's environment lift.
+      if(target)correction.y+=target->saved.terrain.rootOffset;
       if(settings.origin==mmd::CameraOrigin::Follow) {
         follow=target->member.animator;delta=GetBoneWorldPos(target->saved.root)-s.anchor.origin;
         height=mmd::CameraTargetHeight(target->profile);correction.y+=s.slots[s.cameraFollow].height;
@@ -452,6 +466,7 @@ static bool MmdSquadTick() {
 static void MmdSquadSeek(double seconds) {
   auto &s=g_squad;
   if(!s.active) {s.pending.seek(seconds);s.hotkeys=true;return;}
+  for(auto &actor:s.actors)if(actor)++actor->saved.terrain.epoch;
   s.pending.seek(seconds);
 }
 static bool MmdSquadCommand(int command) {

@@ -53,8 +53,10 @@ if(WIN32)
     src/core/frame_driver.h src/math/frame_cadence.h src/math/hotkey_state.h
     src/core/runtime_bootstrap.h src/core/runtime_lifetime.h src/core/runtime_shutdown.h src/core/plugin_paths.h src/core/proxy_loader.h
     src/game/mmd_audio.h src/math/mmd_audio_sync.h
-    src/game/mmd_camera.h src/math/mmd_camera.h src/game/eye_gaze.h src/math/eye_gaze.h
+    src/game/mmd_camera.h src/math/mmd_camera.h src/game/eye_gaze.h src/math/eye_gaze.h src/math/eye_gaze_profile.h
     src/game/mmd_camera_settings.h src/math/mmd_camera_profile.h src/math/mmd_calibration.h
+    src/game/mmd_runtime_api.h src/game/mmd_avatar.h src/math/mmd_avatar.h
+    src/game/mmd_terrain.h src/math/mmd_terrain.h
     src/math/cloth_state.h src/game/cloth.h src/game/cloth_anchor.h
     src/game/skeleton.h src/game/freeze.h src/game/accessory.h src/game/morph.h src/game/smc_morph.h src/game/smc_automation.h
     src/math/character_face.h src/math/face_geometry.h src/math/mmd_face_controls.h
@@ -137,6 +139,8 @@ add_poser_test(test_native_cloth tests/test_native_cloth.cpp)
 add_poser_test(test_pose_file tests/test_pose_file.cpp)
 add_poser_test(test_mmd tests/test_mmd.cpp)
 add_poser_test(test_mmd_calibration tests/test_mmd_calibration.cpp)
+add_poser_test(test_mmd_avatar tests/test_mmd_avatar.cpp)
+add_poser_test(test_mmd_terrain tests/test_mmd_terrain.cpp)
 add_poser_test(test_mmd_camera tests/test_mmd_camera.cpp)
 add_poser_test(test_mmd_transport tests/test_mmd_transport.cpp)
 add_poser_test(test_character_faces tests/test_character_faces.cpp)
@@ -186,6 +190,10 @@ if(MSVC)
   target_link_libraries(test_frame_driver PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/deps/minhook_lib/lib/libMinHook.x64.lib)
   add_poser_test(test_mmd_runtime tests/test_mmd_runtime.cpp)
+  add_poser_test(test_mmd_environment_runtime tests/test_mmd_environment_runtime.cpp)
+  target_include_directories(test_mmd_environment_runtime PRIVATE deps/minhook_lib/include)
+  target_compile_options(test_mmd_environment_runtime PRIVATE /EHa)
+  target_link_libraries(test_mmd_environment_runtime PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/deps/minhook_lib/lib/libMinHook.x64.lib)
   target_compile_options(test_mmd_runtime PRIVATE /EHa)
   add_poser_test(test_character_capture tests/test_character_capture.cpp)
   add_poser_test(test_component_query tests/test_component_query.cpp)
