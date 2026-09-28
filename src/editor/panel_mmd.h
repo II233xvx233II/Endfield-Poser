@@ -2,6 +2,7 @@
 #include "config.h"
 #include "game/mmd_player.h"
 #include "editor/panel_mmd_adaptation.h"
+#include "editor/panel_mod_bridge.h"
 #include "imgui.h"
 
 static void DrawMmdHotkeyHints() {
@@ -384,6 +385,7 @@ static void DrawMmdPanel() {
       }
       if(changed){MmdSaveMappings(native);MmdReport();}ImGui::EndDisabled();
     }
+    DrawModBridgePanel();
     if (ImGui::CollapsingHeader(u8"导入报告")) {
       if (m.report.empty())
         ImGui::TextDisabled(u8"没有发现未映射轨道");

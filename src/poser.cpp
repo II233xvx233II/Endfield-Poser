@@ -344,6 +344,7 @@ static void DrawPoserGuiBody() {
     // 只在真的装了 XXMI/3DMigoto 时才提示撞键，避免没装的用户被无谓打扰
     if (g_hotkeyConflict && g_xxmiDetected)
       ImGui::TextDisabled("\u26a0 %s", g_hotkeyConflictMsg);
+    DrawModBridgeConflictNotice();
     if (ImGui::CollapsingHeader(u8"\u5feb\u6377\u952e\uff08\u53ef\u6539\uff09")) {
       DrawHotkeySetting(u8"\u547c\u51fa / \u9690\u85cf\u9762\u677f",
                         "gui_toggle_key", &g_guiToggleVK, &g_guiToggleCtrl, 1);
@@ -761,6 +762,8 @@ static DWORD WINAPI InitThread(LPVOID) {
   Log("[POSER] === Endfield Poser v%s attached (build %s %s) ===",
       POSER_VERSION, __DATE__, __TIME__);
   LoadPoserConfig();
+  // EFMI loads mods on its first frame: settle the bridge file before that.
+  ModBridgeStartup();
   ClothInitializeHost();
   poser_agreement::state.load(PoserFilePath(poser_agreement::kFileName));
   Log("[AGREEMENT] revision %d: %s", poser_agreement::kRevision,
@@ -825,11 +828,14 @@ static DWORD WINAPI InitThread(LPVOID) {
   return 0;
 }
 
-BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID) {
+BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID reserved) {
   if (reason == DLL_PROCESS_ATTACH) {
     DisableThreadLibraryCalls(module);
     HANDLE thread = CreateThread(nullptr, 0, InitThread, nullptr, 0, nullptr);
     if (thread) CloseHandle(thread);
+  } else if (reason == DLL_PROCESS_DETACH && !reserved) {
+    // FreeLibrary: EFMI must not keep calling into this module.
+    ModBridgeRemoveHook();
   }
   return TRUE;
 }
