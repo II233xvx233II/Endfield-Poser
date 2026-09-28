@@ -13,10 +13,11 @@
 namespace mirror_net {
 
 constexpr uint32_t kMagic = 0x524D5045; // "EPMR"
-constexpr uint16_t kVersion = 1;
+constexpr uint16_t kVersion = 2;        // 2: pose packets carry slot and model
 constexpr uint16_t kDefaultPort = 28923;
 constexpr int kMaxPlayers = 4;          // host + 3; the squad has 4 slots
 constexpr int kNameBytes = 32;
+constexpr int kModelBytes = 64;
 
 enum Type : uint8_t { Hello = 1, Welcome = 2, Reject = 3, Pose = 4, Bye = 5 };
 enum RejectReason : uint8_t { Full = 1, WrongVersion = 2 };
@@ -45,6 +46,10 @@ struct RejectPacket {
 struct PosePacket {
   Header header;
   char name[kNameBytes];
+  // The sender's controlled character, so receivers can show it on the same
+  // teammate: normalized model name, and squad slot (0-3, 255 unknown).
+  char model[kModelBytes];
+  uint8_t slot;
   PoserHumanPose pose;
 };
 struct ByePacket {
@@ -88,12 +93,20 @@ inline bool ValidPose(const PoserHumanPose &p) {
     if ((p.boneMask >> bone & 1) && !usable(p.rotations[bone])) return false;
   return true;
 }
-// Copies a UTF-8 name, cutting on a character boundary and always terminating.
-inline void CopyName(char (&out)[kNameBytes], const char *in) {
-  memset(out, 0, sizeof(out));
-  size_t n = in ? strnlen(in, kNameBytes - 1) : 0;
-  while (n > 0 && n < strlen(in) && (uint8_t(in[n]) & 0xC0) == 0x80) --n;
+// Copies UTF-8 text, cutting on a character boundary and always terminating.
+template <size_t N> inline void CopyText(char (&out)[N], const char *in) {
+  memset(out, 0, N);
+  size_t n = in ? strnlen(in, N - 1) : 0;
+  while (n > 0 && in[n] && (uint8_t(in[n]) & 0xC0) == 0x80) --n;
   if (n) memcpy(out, in, n);
+}
+inline void CopyName(char (&out)[kNameBytes], const char *in) { CopyText(out, in); }
+// Same rule as Poser's CurrentCharModelKey: drop "(Clone)#NN" and trailing
+// separators, so both machines name one character identically.
+inline void NormalizeModel(char (&out)[kModelBytes], const char *raw) {
+  CopyText(out, raw);
+  if (char *paren = strchr(out, '(')) *paren = 0;
+  for (size_t n = strlen(out); n && (out[n - 1] == ' ' || out[n - 1] == '_' || out[n - 1] == '#');) out[--n] = 0;
 }
 // seq wraps; treat anything within half the range ahead as newer.
 inline bool Newer(uint32_t seq, uint32_t last) { return int32_t(seq - last) > 0; }

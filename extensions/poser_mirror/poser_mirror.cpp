@@ -55,6 +55,7 @@ struct App {
   std::map<uint8_t, int> assigned; // remote player id -> squad slot
   std::array<double, POSER_SQUAD_SLOTS> retryAt{};
   std::vector<std::string> players; // panel lines, rebuilt every frame
+  std::string ownLine, captureError;
 };
 App &app = *new App; // Leaked: never torn down under the loader lock.
 
@@ -67,6 +68,7 @@ void StopNet() {
   for (const auto &entry : app.assigned) api->releasePuppet(entry.second);
   app.assigned.clear();
   app.players.clear();
+  app.ownLine.clear();
   app.session.stop();
 }
 void Connect() {
@@ -124,26 +126,63 @@ void RunMirror(double now) {
 }
 
 // ---- 局域网投影（第 2 步） ----
-void RunNet(double now) {
-  PoserHumanPose own{};
-  own.size = sizeof(own);
-  const bool haveOwn = api->captureControlled(&own) != 0;
-  if (haveOwn) app.session.publish(own);
-  auto views = app.session.sample(now - app.bufferMs / 1000.0);
-  std::sort(views.begin(), views.end(), [](const auto &a, const auto &b) { return a.id < b.id; });
+struct Placement {
+  int slot = -1;
+  const char *how = "";
+};
+// Show each other player on the teammate that is the same character they
+// control; else on the same squad slot; else on any free slot. The local
+// controlled character is never available.
+std::map<uint8_t, Placement> AssignSlots(const std::vector<mirror_net::Session::View> &views,
+                                         const PoserSquadInfo &squad) {
+  bool open[POSER_SQUAD_SLOTS] = {};
+  char models[POSER_SQUAD_SLOTS][mirror_net::kModelBytes] = {};
+  for (int s = 0; s < POSER_SQUAD_SLOTS; ++s) {
+    open[s] = squad.valid && squad.ready[s] && s != squad.controlledSlot;
+    mirror_net::NormalizeModel(models[s], squad.names[s]);
+  }
+  std::map<uint8_t, Placement> result;
+  auto take = [&](const mirror_net::Session::View &view, int slot, const char *how) {
+    open[slot] = false;
+    result[view.id] = {slot, how};
+  };
+  for (const auto &view : views)
+    for (int s = 0; s < POSER_SQUAD_SLOTS && view.model[0]; ++s)
+      if (open[s] && !strcmp(models[s], view.model)) { take(view, s, u8"同一角色"); break; }
+  for (const auto &view : views)
+    if (!result.count(view.id) && view.slot < POSER_SQUAD_SLOTS && open[view.slot])
+      take(view, view.slot, u8"对方的角色不在本机小队，按同一栏位");
+  for (const auto &view : views)
+    for (int s = 0; s < POSER_SQUAD_SLOTS && !result.count(view.id); ++s)
+      if (open[s]) take(view, s, u8"同一角色和栏位都被占用，改用空位");
+  return result;
+}
 
-  // Each other player takes the next free slot that is not the controlled one.
+void RunNet(double now) {
   PoserSquadInfo squad{};
   squad.size = sizeof(squad);
   api->getSquad(&squad);
-  std::vector<int> free;
-  for (int s = 0; s < POSER_SQUAD_SLOTS; ++s)
-    if (squad.valid && squad.ready[s] && s != squad.controlledSlot) free.push_back(s);
-  std::map<uint8_t, int> desired;
-  for (size_t k = 0; k < views.size() && k < free.size(); ++k) desired[views[k].id] = free[k];
+  const int ownSlot = squad.valid ? squad.controlledSlot : -1;
+  char ownModel[mirror_net::kModelBytes] = {};
+  if (ownSlot >= 0) mirror_net::NormalizeModel(ownModel, squad.names[ownSlot]);
+
+  PoserHumanPose own{};
+  own.size = sizeof(own);
+  const bool haveOwn = api->captureControlled(&own) != 0;
+  // A failed capture means the others see nothing of us: surface and log it.
+  const std::string captureError = haveOwn ? "" : api->status();
+  if (captureError != app.captureError) {
+    app.captureError = captureError;
+    if (!captureError.empty()) api->log((u8"[NET] 本机姿态无法采集：" + captureError).c_str());
+  }
+  if (haveOwn) app.session.publish(own, ownSlot, ownModel);
+
+  auto views = app.session.sample(now - app.bufferMs / 1000.0);
+  std::sort(views.begin(), views.end(), [](const auto &a, const auto &b) { return a.id < b.id; });
+  const auto desired = AssignSlots(views, squad);
   for (auto it = app.assigned.begin(); it != app.assigned.end();) {
     const auto want = desired.find(it->first);
-    if (want == desired.end() || want->second != it->second) {
+    if (want == desired.end() || want->second.slot != it->second) {
       api->releasePuppet(it->second);
       it = app.assigned.erase(it);
     } else {
@@ -151,22 +190,32 @@ void RunNet(double now) {
     }
   }
 
+  char line[320];
   app.players.clear();
-  char line[192];
+  if (haveOwn)
+    snprintf(line, sizeof(line), u8"本机：第 %d 位 %s，已发送 %u 包", ownSlot + 1, ownModel, app.session.sent());
+  else
+    snprintf(line, sizeof(line), u8"本机姿态无法采集，其他人看不到你：%s", captureError.c_str());
+  app.ownLine = line;
+
   for (size_t k = 0; k < views.size(); ++k) {
     const auto &view = views[k];
+    char who[160];
+    snprintf(who, sizeof(who), u8"#%d %s（操控第 %d 位 %s，收到 %u 包%s）", view.id, view.name,
+             view.slot < POSER_SQUAD_SLOTS ? view.slot + 1 : 0, view.model[0] ? view.model : "?", view.received,
+             view.age > .5 ? u8"，数据中断" : "");
     const auto want = desired.find(view.id);
     if (want == desired.end()) {
-      snprintf(line, sizeof(line), u8"#%d %s：小队没有空位，未显示", view.id, view.name);
+      snprintf(line, sizeof(line), u8"%s：小队没有可用位置，未显示", who);
       app.players.push_back(line);
       continue;
     }
-    const int slot = want->second;
+    const int slot = want->second.slot;
     if (!app.assigned.count(view.id)) {
       if (now < app.retryAt[slot]) continue;
       if (!api->acquirePuppet(slot)) {
         app.retryAt[slot] = now + 1;
-        snprintf(line, sizeof(line), u8"#%d %s：%s", view.id, view.name, api->status());
+        snprintf(line, sizeof(line), u8"%s：无法接管第 %d 位：%s", who, slot + 1, api->status());
         app.players.push_back(line);
         continue;
       }
@@ -180,15 +229,15 @@ void RunNet(double now) {
     if (!api->applyPuppet(slot, &pose, PoserVec3{0, 0, 0}, 0)) {
       app.assigned.erase(view.id);
       app.retryAt[slot] = now + 1;
-      snprintf(line, sizeof(line), u8"#%d %s：%s", view.id, view.name, api->status());
+      snprintf(line, sizeof(line), u8"%s：%s", who, api->status());
       app.players.push_back(line);
       continue;
     }
     if (haveOwn && app.placement == 0)
-      snprintf(line, sizeof(line), u8"#%d %s → 第 %d 位，距离 %.0f 米", view.id, view.name, slot + 1,
+      snprintf(line, sizeof(line), u8"%s → 本机第 %d 位（%s），距离 %.0f 米", who, slot + 1, want->second.how,
                mirror_pose::Distance(own.rootPosition, view.pose.rootPosition));
     else
-      snprintf(line, sizeof(line), u8"#%d %s → 第 %d 位", view.id, view.name, slot + 1);
+      snprintf(line, sizeof(line), u8"%s → 本机第 %d 位（%s）", who, slot + 1, want->second.how);
     app.players.push_back(line);
   }
   // Keep a local message (bad port, missing IP) until a session is started.
@@ -235,12 +284,14 @@ void DrawNet() {
   api->uiCombo(u8"显示位置", &app.placement, placements, 2);
   api->uiSliderFloat(u8"缓冲延迟 (毫秒)", &app.bufferMs, 0, 500, "%.0f");
   api->uiSeparator();
+  if (!app.ownLine.empty()) api->uiText(app.ownLine.c_str());
   if (app.players.empty()) api->uiTextDisabled(u8"暂无其他玩家");
   for (const auto &line : app.players) api->uiText(line.c_str());
   if (app.mode == Host)
     api->uiTextDisabled(u8"其他人在同一局域网内输入上面的本机地址加入。首次开启时，"
                         u8"请在 Windows 防火墙弹窗中允许“专用网络”访问。");
-  api->uiTextDisabled(u8"每名其他玩家显示在小队的一个空闲、非操控位置上（最多 3 人）。");
+  api->uiTextDisabled(u8"其他玩家优先显示在本机小队中与其相同的角色上；那个角色正被你操控时，"
+                      u8"改用同一栏位或其他空位（最多 3 人）。");
 }
 void OnGui(void *) {
   static const char *const modes[] = {u8"关闭", u8"本地镜像", u8"局域网 · 创建主机", u8"局域网 · 加入主机"};
@@ -268,6 +319,7 @@ DWORD WINAPI ConnectHost(LPVOID) {
       return 0;
     }
     api = found;
+    app.session.setLog(api->log);
     LARGE_INTEGER t;
     QueryPerformanceCounter(&t);
     snprintf(app.name, sizeof(app.name), u8"玩家%04d", int(t.QuadPart % 10000));

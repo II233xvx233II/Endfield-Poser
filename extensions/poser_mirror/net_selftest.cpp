@@ -29,7 +29,7 @@ static void Pump(Session *sessions[], const float xs[], int count, double second
   const double end = Now() + seconds;
   while (Now() < end) {
     for (int i = 0; i < count; ++i)
-      if (sessions[i]) sessions[i]->publish(MakePose(xs[i]));
+      if (sessions[i]) sessions[i]->publish(MakePose(xs[i]), i % POSER_SQUAD_SLOTS, ("chr_" + std::to_string(i) + "(Clone)#3").c_str());
     Sleep(10);
   }
 }
@@ -67,6 +67,9 @@ int main() {
   char name[kNameBytes];
   CopyName(name, u8"一二三四五六七八九十一二三"); // 39 bytes of 3-byte characters
   Check(strlen(name) == 30 && name[31] == 0, "name cut on a UTF-8 boundary");
+  char model[kModelBytes];
+  NormalizeModel(model, "chr_0003_endminf (Clone)#12");
+  Check(!strcmp(model, "chr_0003_endminf"), "model name normalized like Poser");
 
   Session host, a, b, c, d;
   Check(host.startHost(port, "host", error), "host starts");
@@ -79,6 +82,11 @@ int main() {
   Check(Sees(host, 2, 2) && Sees(host, 3, 3), "host receives both joiners");
   Check(Sees(a, 1, 1) && Sees(a, 3, 3), "joiner a receives host and relayed b");
   Check(Sees(b, 1, 1) && Sees(b, 2, 2), "joiner b receives host and relayed a");
+  bool carried = false;
+  for (const auto &v : b.sample(Now()))
+    if (v.id == 2) carried = v.slot == 1 && !strcmp(v.model, "chr_1") && v.received > 0;
+  Check(carried, "relayed packets keep the sender's slot and character");
+  Check(a.sent() > 0 && host.sent() > 0, "send counters advance");
   Check(host.status().find(u8"主机已开启") != std::string::npos, "host status reports addresses");
 
   // Junk and stale packets must be ignored without disturbing the session.

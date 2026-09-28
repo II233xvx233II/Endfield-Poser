@@ -37,8 +37,15 @@ public:
   struct View {
     uint8_t id;
     char name[kNameBytes];
+    char model[kModelBytes]; // sender's controlled character, normalized
+    uint8_t slot;            // sender's controlled squad slot, 255 unknown
+    uint32_t received;       // pose packets accepted from this player
+    double age;              // seconds since the last one
     PoserHumanPose pose;
   };
+  using LogFn = void (*)(const char *utf8);
+  // Called from the network thread on connection events. Set before start().
+  void setLog(LogFn log) { log_ = log; }
 
   bool startHost(uint16_t port, const char *name, std::string &error) {
     return start(true, "", port, name, error);
@@ -65,10 +72,16 @@ public:
   }
   bool running() const { return thread_ != nullptr; }
 
-  void publish(const PoserHumanPose &pose) {
+  void publish(const PoserHumanPose &pose, int slot, const char *model) {
     Lock lock(lock_);
     outgoing_ = pose;
+    outgoingSlot_ = slot >= 0 && slot < POSER_SQUAD_SLOTS ? uint8_t(slot) : 255;
+    NormalizeModel(outgoingModel_, model);
     outgoingTime_ = Now();
+  }
+  uint32_t sent() {
+    Lock lock(lock_);
+    return sent_;
   }
   // Remote players' poses at `time` on this machine's clock.
   std::vector<View> sample(double time) {
@@ -80,6 +93,10 @@ public:
       View view;
       view.id = entry.first;
       memcpy(view.name, remote.name, sizeof(view.name));
+      memcpy(view.model, remote.model, sizeof(view.model));
+      view.slot = remote.slot;
+      view.received = remote.received;
+      view.age = Now() - remote.lastSeen;
       if (remote.buffer.sample(time, view.pose)) views.push_back(view);
     }
     return views;
@@ -101,7 +118,9 @@ private:
   };
   struct Remote {
     char name[kNameBytes] = {};
-    uint32_t seq = 0;
+    char model[kModelBytes] = {};
+    uint8_t slot = 255;
+    uint32_t seq = 0, received = 0;
     bool any = false;
     double lastSeen = 0;
     mirror_pose::PoseBuffer buffer;
@@ -110,15 +129,20 @@ private:
     sockaddr_in addr;
     uint8_t id;
     double lastSeen;
+    uint32_t invalid = 0;
   };
 
   // ---- shared with the game thread, guarded by lock_ ----
   SRWLOCK lock_ = SRWLOCK_INIT;
   PoserHumanPose outgoing_{};
+  char outgoingModel_[kModelBytes] = {};
+  uint8_t outgoingSlot_ = 255;
   double outgoingTime_ = -1e9;
+  uint32_t sent_ = 0;
   std::map<uint8_t, Remote> remotes_;
   std::string status_ = u8"未连接";
   int players_ = 0;
+  LogFn log_ = nullptr;
 
   // ---- worker thread only (set before it starts) ----
   HANDLE thread_ = nullptr;
@@ -134,9 +158,21 @@ private:
   std::vector<Peer> peers_;
   double lastHostSeen_ = 0;
 
+  // Every status change is a connection event worth a log line.
   void setStatus(const std::string &text) {
-    Lock lock(lock_);
-    status_ = text;
+    {
+      Lock lock(lock_);
+      status_ = text;
+    }
+    event(text);
+  }
+  void event(const std::string &text) {
+    if (log_) log_((std::string("[NET] ") + text).c_str());
+  }
+  static std::string Address(const sockaddr_in &a) {
+    char ip[INET_ADDRSTRLEN] = {};
+    inet_ntop(AF_INET, &a.sin_addr, ip, sizeof(ip));
+    return std::string(ip) + ":" + std::to_string(ntohs(a.sin_port));
   }
   bool start(bool host, const std::string &hostName, uint16_t port, const char *name, std::string &error) {
     stop();
@@ -279,9 +315,12 @@ private:
     {
       Lock lock(lock_);
       if (now - outgoingTime_ > 1) return false; // Stale: the game stopped publishing.
+      if (!host_ && !joined_) return false;
       p.pose = outgoing_;
+      p.slot = outgoingSlot_;
+      memcpy(p.model, outgoingModel_, sizeof(p.model));
+      ++sent_;
     }
-    if (!host_ && !joined_) return false;
     p.header = MakeHeader(Pose, self_, session_, ++seq_);
     memcpy(p.name, name_, sizeof(p.name));
     if (host_) for (const auto &peer : peers_) sendTo(peer.addr, &p, sizeof(p));
@@ -343,6 +382,11 @@ private:
         peers_.push_back({from, id, now});
         peer = &peers_.back();
         updatePlayers();
+        HelloPacket hello;
+        memcpy(&hello, data, sizeof(hello));
+        char name[kNameBytes];
+        CopyName(name, hello.name);
+        event(u8"玩家 #" + std::to_string(id) + " " + name + u8" 加入，来自 " + Address(from));
       }
       peer->lastSeen = now;
       sendWelcome(from, peer->id);
@@ -351,13 +395,16 @@ private:
     if (!peer || header.session != session_ || header.sender != peer->id) return;
     peer->lastSeen = now;
     if (type == Bye) {
-      removePeer(peer->id);
+      removePeer(peer->id, u8"离开");
       return;
     }
     if (type != Pose) return;
     PosePacket packet;
     memcpy(&packet, data, sizeof(packet));
-    if (!ValidPose(packet.pose)) return;
+    if (!ValidPose(packet.pose)) {
+      if (peer->invalid++ == 0) event(u8"丢弃玩家 #" + std::to_string(peer->id) + u8" 的无效姿态数据");
+      return;
+    }
     if (!store(packet, now)) return;
     // Relay to everyone else; the packet keeps its original sender id.
     for (const auto &other : peers_)
@@ -404,17 +451,21 @@ private:
     remote.any = true;
     remote.seq = packet.header.seq;
     remote.lastSeen = now;
+    ++remote.received;
     CopyName(remote.name, packet.name);
+    CopyText(remote.model, packet.model);
+    remote.slot = packet.slot < POSER_SQUAD_SLOTS ? packet.slot : 255;
     remote.buffer.push(now, packet.pose);
     return true;
   }
-  void removePeer(uint8_t id) {
+  void removePeer(uint8_t id, const char *why) {
     peers_.erase(std::remove_if(peers_.begin(), peers_.end(), [&](const Peer &p) { return p.id == id; }), peers_.end());
     {
       Lock lock(lock_);
       remotes_.erase(id);
     }
     updatePlayers();
+    event(u8"玩家 #" + std::to_string(id) + " " + why);
   }
   void updatePlayers() {
     Lock lock(lock_);
@@ -424,17 +475,19 @@ private:
     joined_ = false;
     session_ = 0;
     self_ = 0;
-    Lock lock(lock_);
-    remotes_.clear();
-    players_ = 0;
-    status_ = reason;
+    {
+      Lock lock(lock_);
+      remotes_.clear();
+      players_ = 0;
+    }
+    setStatus(reason);
   }
   void expire(double now) {
     if (host_) {
       std::vector<uint8_t> gone;
       for (const auto &peer : peers_)
         if (now - peer.lastSeen > kPeerTimeout) gone.push_back(peer.id);
-      for (auto id : gone) removePeer(id);
+      for (auto id : gone) removePeer(id, u8"超时断开");
     } else if (joined_ && now - lastHostSeen_ > kPeerTimeout) {
       dropHost(u8"与主机失去连接，正在重连…");
     }
