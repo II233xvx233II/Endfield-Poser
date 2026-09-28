@@ -2,6 +2,8 @@
 // 依赖: core/base.h, core/il2cpp_api.h, core/gui_overlay.h, config.h
 // 负责：DLL 入口、Applepie 插件协议导出、IL2CPP 解析与 GUI 线程启动。
 // 后续阶段的冻结/角色捕获/相机等通过 GameFrameTick() 接入（见 Task 2.1+）。
+// Modified 2026-09-28 by II233xvx233II (mirror-extension branch): extension
+// host hooks (core/extension_host.h). Licensed under AGPL-3.0 like the original.
 
 #include <cstdint>
 
@@ -28,6 +30,7 @@
 #include "editor/panel_agreement.h"
 #include "config.h"
 #include "game/cloth_init.h"
+#include "core/extension_host.h"
 
 // 手动刷新骨骼（面板按钮 / WebUI /api/refresh 共用）
 // 面板里的「打开日志」：弹资源管理器并选中 poser_log.txt —— 让非技术用户
@@ -141,6 +144,8 @@ static void PrepareCharacterHandoff() {
   // captures. Save cached values; never query the outgoing skeleton for them.
   void *oldAnimator = g_charAnimator;
   bool oldAlive = CharAnimatorAlive();
+  // The incoming character may be a puppet; hand it back before any capture.
+  poser_puppet::ReleaseAll(u8"切换操控角色，投影已恢复");
   MmdCharacterChanging();
   SaveCharStateOnSwitch();
   UnfreezeCharacter();
@@ -284,7 +289,9 @@ static void GameFrameTickBody() {
     else if (mmdKeys & (1 << 3)) MmdPlaybackCommand(3);
     else if (mmdKeys & (1 << 1)) MmdPlaybackCommand(1);
     else if (mmdKeys & 1) MmdPlaybackCommand(0);
+    poser_ext::BeforeMmd(); // MMD takes squad members back from extensions first
     MmdTick();
+    if (g_pluginEnabled) poser_ext::AfterMmd();
   } __except (1) {
     Log("[POSER] GameFrameTick SEH exception caught");
   }
@@ -466,6 +473,7 @@ static void DrawPoserGuiBody() {
         SetBoneLocalPos(rootT, Vec3{rp[0], rp[1], rp[2]});
       }
     }
+    poser_ext::DrawGui();
     if(ImGui::CollapsingHeader(u8"诊断信息")) {
       ImGui::Text("Animator=%p  Bones=%d",g_charAnimator,s_humanBoneCount);
       ImGui::TextWrapped("Overlay: %s",g_overlayStatus);
@@ -585,6 +593,7 @@ static void OnGuiShutdownRestore() {
   RuntimeThreadScope runtime;
   if (!runtime.ready) return;
   MmdStop();
+  poser_puppet::ReleaseAll(u8"插件已停用，投影已恢复");
   s_mmdClosing.store(true);
   if(HWND dialog=s_mmdDialog.load()) PostMessageW(dialog,WM_CLOSE,0,0);
   if(g_mmd.loading) { g_mmd.loader.wait(); g_mmd.loading=false; }

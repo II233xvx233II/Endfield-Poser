@@ -1,8 +1,10 @@
-﻿param([switch]$RunTests)
+﻿param([switch]$RunTests, [switch]$Extensions)
 
 $ErrorActionPreference = 'Stop'
 
 # Endfield Poser - cmake-free MSVC build.
+# Modified 2026-09-28 by II233xvx233II (mirror-extension branch): sdk include
+# path and the optional -Extensions switch.
 #
 # Why this exists:
 #   * Uses installed MSVC and Windows SDK. An optional SDK fallback uses NuGet:
@@ -16,6 +18,8 @@ $ErrorActionPreference = 'Stop'
 #   plugin\d3dcompiler_47.dll   (DX proxy loader, forwards to System32)
 #   plugin\vulkan-1.dll         (Vulkan proxy loader, forwards to System32)
 # -RunTests also builds and runs private local tests, when available.
+# -Extensions also builds optional extension DLLs into build\extensions\
+#   (never into plugin\: the installer does not ship them).
 
 $root = Join-Path $PSScriptRoot '..'
 Set-Location $root
@@ -88,7 +92,7 @@ $sdkIncFlags = ($sdkInc | ForEach-Object { '/I "' + $_ + '"' }) -join ' '
 $sdkLibFlags = '/LIBPATH:"' + $sdkLibDirUm + '" /LIBPATH:"' + $sdkLibDirUcrt + '"'
 
 $common = "/nologo /std:c++17 /O2 /bigobj /Gy /Gw /MD /EHa /utf-8 /Fo:build\obj\ /D_CRT_SECURE_NO_WARNINGS /DWIN32_LEAN_AND_MEAN /DIMGUI_DEFINE_MATH_OPERATORS /D_DISABLE_CONSTEXPR_MUTEX_CONSTRUCTOR $sdkIncFlags"
-$inc    = '/DBROTLI_STATIC /I deps\brotli\c\include /I deps /I deps\imgui /I deps\imguizmo /I deps\minhook_lib\include /I deps\json /I src'
+$inc    = '/DBROTLI_STATIC /I deps\brotli\c\include /I deps /I deps\imgui /I deps\imguizmo /I deps\minhook_lib\include /I deps\json /I src /I sdk'
 
 function Invoke-Cl([string]$CompileArgs) {
   # /d suppresses user cmd AutoRun scripts; compiler inherits the x64 environment.
@@ -145,6 +149,13 @@ $vulkanArgs = "$common /LD src\core\proxy_vulkan_full.cpp /Fe:plugin\vulkan-1.dl
 Invoke-Cl $vulkanArgs
 
 Write-Host ''
+if ($Extensions) {
+  Write-Host '=== Building optional extension poser_mirror.dll ==='
+  New-Item -ItemType Directory -Force -Path 'build\extensions' | Out-Null
+  Invoke-Cl "$common /I sdk /LD extensions\poser_mirror\poser_mirror.cpp /Fe:build\extensions\poser_mirror.dll /link $sdkLibFlags"
+  Write-Host 'Copy build\extensions\poser_mirror.dll into <game>\plugin\ to enable it.'
+  Write-Host ''
+}
 if ($RunTests) {
 Write-Host '=== Running local tests (MSVC) ==='
 $tests = @(

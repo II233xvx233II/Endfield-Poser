@@ -1,4 +1,6 @@
 #pragma once
+// Modified 2026-09-28 by II233xvx233II (mirror-extension branch): split
+// MmdSquadCaptureActor out of MmdSquadCapture for extension puppets.
 #include "game/mmd_player.h"
 #include "game/squad.h"
 #include "math/mmd_squad.h"
@@ -142,8 +144,8 @@ static void MmdSquadFaceMap(MmdSquadActor &actor,const mmd::MotionClip &clip) {
     actor.morphs[track.first]=map;
   }
 }
-static void MmdSquadCapture(int slot,const poser_squad::Member &member) {
-  auto &s=g_squad;auto &ptr=s.actors[slot];ptr=std::make_unique<MmdSquadActor>();auto &a=*ptr;
+// Also used by extension puppets (game/puppet.h): snapshot only, no writes.
+static void MmdSquadCaptureActor(MmdSquadActor &a,const poser_squad::Member &member) {
   a.member=member;auto &saved=a.saved;saved.animator=member.animator;saved.root=SafeGetComponentTransform(member.animator);
   if(!UnityObjAlive(saved.root))throw std::runtime_error(u8"队员模型尚未就绪");
   saved.references=std::make_shared<GripReferences>();
@@ -158,6 +160,9 @@ static void MmdSquadCapture(int slot,const poser_squad::Member &member) {
     saved.transforms.push_back({bone.transform,GetBoneLocalPos(bone.transform),GetBoneLocalRot(bone.transform)});
   }
   MmdSquadCollectWriters(a);
+}
+static void MmdSquadCapture(int slot,const poser_squad::Member &member) {
+  auto &ptr=g_squad.actors[slot];ptr=std::make_unique<MmdSquadActor>();MmdSquadCaptureActor(*ptr,member);
 }
 // Snapshot every participant before changing anything; arm restoration before
 // the first disable so even a partial freeze is rolled back by MmdSquadStop.

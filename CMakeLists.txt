@@ -1,4 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
+# Modified 2026-09-28 by II233xvx233II (mirror-extension branch): sdk include
+# path, extension host headers and the optional POSER_BUILD_EXTENSIONS target.
 project(endfield_poser CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -66,6 +68,7 @@ if(WIN32)
     src/editor/selection.h src/editor/panel_library.h src/editor/panel_morph.h
     src/editor/panel_bones.h
     src/editor/ik_control.h
+    sdk/poser_extension.h src/core/extension_host.h src/game/puppet.h
     deps/imgui/imgui.cpp
     deps/imgui/imgui_draw.cpp
     deps/imgui/imgui_tables.cpp
@@ -75,7 +78,7 @@ if(WIN32)
     deps/imguizmo/ImGuizmo.cpp
   )
   target_include_directories(poser PRIVATE
-    deps deps/imgui deps/imguizmo deps/minhook_lib/include deps/json src ${CMAKE_CURRENT_SOURCE_DIR})
+    deps deps/imgui deps/imguizmo deps/minhook_lib/include deps/json src sdk ${CMAKE_CURRENT_SOURCE_DIR})
   target_compile_definitions(poser PRIVATE
     APPLEPIE_PLUGIN_IMPL _CRT_SECURE_NO_WARNINGS WIN32_LEAN_AND_MEAN
     IMGUI_DEFINE_MATH_OPERATORS)
@@ -114,6 +117,14 @@ if(WIN32)
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
             $<TARGET_FILE:vulkan-1>
             ${CMAKE_CURRENT_SOURCE_DIR}/plugin/vulkan-1.dll)
+
+  # Optional extensions: built next to the other binaries, never deployed.
+  option(POSER_BUILD_EXTENSIONS "Build optional extension DLLs" OFF)
+  if(POSER_BUILD_EXTENSIONS)
+    add_library(poser_mirror SHARED extensions/poser_mirror/poser_mirror.cpp sdk/poser_extension.h)
+    target_include_directories(poser_mirror PRIVATE sdk)
+    target_compile_definitions(poser_mirror PRIVATE _CRT_SECURE_NO_WARNINGS WIN32_LEAN_AND_MEAN)
+  endif()
 endif()
 
 # Private local tests are optional; public checkouts build without them.

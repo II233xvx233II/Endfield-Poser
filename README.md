@@ -84,4 +84,14 @@ MMD 表情参考自[茶叶味香皂](https://space.bilibili.com/3546783156276148
 
 本仓库是 [honxi1/Endfield-Poser](https://github.com/honxi1/Endfield-Poser) 的功能分支，按 [AGPL-3.0](LICENSE) 提供。依赖许可证保存在 [licenses](licenses/) 中。
 
-本分支问题请提交 [Issues](https://github.com/OedoSoldier/Endfield-Poser/issues)。上游交流群：终末地影棚爱好者（1126684901）；上游联系邮箱：king_time@foxmail.com。
+### mirror-extension 分支的改动
+
+本分支由 [II233xvx233II](https://github.com/II233xvx233II) 于 2026-09-28 修改，基于 OedoSoldier/Endfield-Poser，同样按 AGPL-3.0 提供：
+
+- 新增扩展接口：[sdk/poser_extension.h](sdk/poser_extension.h)、`src/core/extension_host.h`、`src/game/puppet.h`。外部 DLL 可以借助这套接口读取当前角色的姿态、接管小队队员并在面板中绘制设置。没有扩展时，行为与上游一致。
+- 新增可选扩展[人物镜像](extensions/poser_mirror/README.md)（`poser_mirror.dll`，联机投影第 1 步），默认不打包、不安装。
+- 修改 `src/poser.cpp`、`src/game/mmd_squad.h`、`CMakeLists.txt`、`tools/build_msvc.ps1`，每个文件开头都注明了修改内容。
+
+本分支为非官方修改，与上游作者及鹰角网络均无关；关于本分支改动的问题，请提交到[本仓库的 Issues](https://github.com/II233xvx233II/Endfield-Poser/issues)。
+
+上游问题请提交 [Issues](https://github.com/OedoSoldier/Endfield-Poser/issues)。上游交流群：终末地影棚爱好者（1126684901）；上游联系邮箱：king_time@foxmail.com。
