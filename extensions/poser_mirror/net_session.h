@@ -157,6 +157,8 @@ private:
   uint8_t self_ = 0;
   std::vector<Peer> peers_;
   double lastHostSeen_ = 0;
+  int unanswered_ = 0;         // Hellos sent since the host last answered
+  bool mismatchLogged_ = false;
 
   // Every status change is a connection event worth a log line.
   void setStatus(const std::string &text) {
@@ -184,6 +186,8 @@ private:
     CopyName(name_, name);
     stop_ = false;
     joined_ = false;
+    unanswered_ = 0;
+    mismatchLogged_ = false;
     peers_.clear();
     {
       Lock lock(lock_);
@@ -274,6 +278,7 @@ private:
       if (!host_ && !joined_ && now >= nextHello) {
         sendHello();
         nextHello = now + kHelloInterval;
+        noAnswer();
       }
       if (now >= nextSend) {
         nextSend = now + kSendInterval;
@@ -354,7 +359,10 @@ private:
       }
       if (fromBytes != sizeof(from) || from.sin_family != AF_INET) continue;
       const uint8_t type = Classify(buffer, bytes);
-      if (!type) continue;
+      if (!type) {
+        versionMismatch(buffer, bytes, from);
+        continue;
+      }
       Header header;
       memcpy(&header, buffer, sizeof(header));
       if (host_) hostReceive(type, header, buffer, from);
@@ -410,9 +418,50 @@ private:
     for (const auto &other : peers_)
       if (other.id != peer->id) sendTo(other.addr, &packet, sizeof(packet));
   }
+  static std::string MismatchText(uint16_t theirs) {
+    return u8"双方扩展版本不一致（对方协议 v" + std::to_string(theirs) + u8"，本机 v" + std::to_string(kVersion) +
+           u8"）：请双方都换上同一版 poser_mirror.dll";
+  }
+  // A peer on another protocol version: the host answers its Hello with a
+  // Reject that carries the host's version; the joiner reports that Reject.
+  void versionMismatch(const char *data, int bytes, const sockaddr_in &from) {
+    if (host_) {
+      const uint16_t theirs = ForeignVersion(data, bytes, Hello);
+      if (!theirs) return;
+      RejectPacket reject{};
+      reject.header = MakeHeader(Reject, 1, 0, ++seq_);
+      reject.reason = WrongVersion;
+      sendTo(from, &reject, sizeof(reject));
+      if (!mismatchLogged_) {
+        mismatchLogged_ = true;
+        event(Address(from) + u8" 尝试加入，但" + MismatchText(theirs));
+      }
+      return;
+    }
+    const uint16_t theirs = Same(from, hostAddr_) ? ForeignVersion(data, bytes, Reject) : 0;
+    if (!theirs) return;
+    unanswered_ = 0;
+    if (!mismatchLogged_) {
+      mismatchLogged_ = true;
+      setStatus(MismatchText(theirs));
+    }
+  }
+  // Called after each Hello while not joined; explains a silent host.
+  void noAnswer() {
+    if (++unanswered_ < 3 || mismatchLogged_) return;
+    const std::string text = u8"已发送 " + std::to_string(unanswered_) + u8" 次加入请求，主机 " + Address(hostAddr_) +
+                             u8" 没有回应。请检查：主机已选“创建主机”；IP 和端口正确；主机防火墙已允许"
+                             u8"“专用网络”；双方都是同一版扩展（版本不同的旧版扩展不会回复）。";
+    if (unanswered_ == 3) setStatus(text); // Log once; later updates stay quiet.
+    else {
+      Lock lock(lock_);
+      status_ = text;
+    }
+  }
   void clientReceive(uint8_t type, const Header &header, const char *data, const sockaddr_in &from) {
     if (!Same(from, hostAddr_)) return; // Only the host talks to a joiner.
     const double now = Now();
+    unanswered_ = 0;
     if (type == Welcome) {
       WelcomePacket packet;
       memcpy(&packet, data, sizeof(packet));
@@ -429,7 +478,7 @@ private:
     if (type == Reject) {
       RejectPacket packet;
       memcpy(&packet, data, sizeof(packet));
-      setStatus(packet.reason == Full ? u8"主机已满（最多 4 人），稍后自动重试" : u8"协议版本不一致");
+      setStatus(packet.reason == Full ? u8"主机已满（最多 4 人），稍后自动重试" : MismatchText(header.version));
       return;
     }
     if (!joined_ || header.session != session_) return;

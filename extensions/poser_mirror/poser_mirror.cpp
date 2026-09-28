@@ -292,6 +292,10 @@ void DrawNet() {
                         u8"请在 Windows 防火墙弹窗中允许“专用网络”访问。");
   api->uiTextDisabled(u8"其他玩家优先显示在本机小队中与其相同的角色上；那个角色正被你操控时，"
                       u8"改用同一栏位或其他空位（最多 3 人）。");
+  static char version[96];
+  snprintf(version, sizeof(version), u8"扩展协议 v%u · 构建 %s %s（双方应一致）", unsigned(mirror_net::kVersion),
+           __DATE__, __TIME__);
+  api->uiTextDisabled(version);
 }
 void OnGui(void *) {
   static const char *const modes[] = {u8"关闭", u8"本地镜像", u8"局域网 · 创建主机", u8"局域网 · 加入主机"};
@@ -325,7 +329,11 @@ DWORD WINAPI ConnectHost(LPVOID) {
     snprintf(app.name, sizeof(app.name), u8"玩家%04d", int(t.QuadPart % 10000));
     snprintf(app.port, sizeof(app.port), "%u", unsigned(mirror_net::kDefaultPort));
     PoserExtensionDesc desc{sizeof(desc), u8"人物镜像 / 局域网投影", nullptr, OnFrame, OnGui};
-    api->log(api->registerExtension(&desc) ? "poser_mirror registered" : "poser_mirror registration failed");
+    char line[128];
+    snprintf(line, sizeof(line), "poser_mirror %s: protocol v%u, built %s %s",
+             api->registerExtension(&desc) ? "registered" : "registration failed", unsigned(mirror_net::kVersion),
+             __DATE__, __TIME__);
+    api->log(line);
     return 0;
   }
   return 0;

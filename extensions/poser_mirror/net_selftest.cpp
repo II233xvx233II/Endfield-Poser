@@ -119,6 +119,62 @@ int main() {
   Pump(two, xs, 2, 3.5);
   Check(!Sees(a, 3, 3), "joiner forgets a player that left");
 
+  // An old-version joiner is told why instead of waiting forever.
+  {
+    SOCKET s = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    sockaddr_in to{};
+    to.sin_family = AF_INET;
+    to.sin_port = htons(port);
+    inet_pton(AF_INET, "127.0.0.1", &to.sin_addr);
+    HelloPacket old{};
+    old.header = MakeHeader(Hello, 0, 0, 1);
+    old.header.version = kVersion - 1;
+    sendto(s, reinterpret_cast<const char *>(&old), sizeof(old), 0, reinterpret_cast<sockaddr *>(&to), sizeof(to));
+    DWORD wait = 1000;
+    setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char *>(&wait), sizeof(wait));
+    RejectPacket reply{};
+    const int got = recv(s, reinterpret_cast<char *>(&reply), sizeof(reply), 0);
+    Check(got == int(sizeof(reply)) && reply.header.type == Reject && reply.reason == WrongVersion &&
+              reply.header.version == kVersion,
+          "host rejects an old-version Hello with its own version");
+    closesocket(s);
+  }
+  {
+    // A joiner facing an old-version host sees the mismatch.
+    SOCKET fake = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    sockaddr_in local{};
+    local.sin_family = AF_INET;
+    local.sin_port = htons(port + 2);
+    inet_pton(AF_INET, "127.0.0.1", &local.sin_addr);
+    bind(fake, reinterpret_cast<sockaddr *>(&local), sizeof(local));
+    Session e;
+    e.startJoin("127.0.0.1", uint16_t(port + 2), "e", error);
+    DWORD wait = 2000;
+    setsockopt(fake, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char *>(&wait), sizeof(wait));
+    char hello[256];
+    sockaddr_in from{};
+    int fromBytes = sizeof(from);
+    if (recvfrom(fake, hello, sizeof(hello), 0, reinterpret_cast<sockaddr *>(&from), &fromBytes) > 0) {
+      RejectPacket reject{};
+      reject.header = MakeHeader(Reject, 1, 0, 1);
+      reject.header.version = kVersion + 1;
+      reject.reason = WrongVersion;
+      sendto(fake, reinterpret_cast<const char *>(&reject), sizeof(reject), 0, reinterpret_cast<sockaddr *>(&from), fromBytes);
+    }
+    Sleep(300);
+    Check(e.status().find(u8"版本不一致") != std::string::npos, "joiner reports a host on another version");
+    e.stop();
+    closesocket(fake);
+  }
+  {
+    // Nobody listening: after a few Hellos the joiner explains what to check.
+    Session f;
+    f.startJoin("127.0.0.1", uint16_t(port + 4), "f", error);
+    Sleep(3500);
+    Check(f.status().find(u8"没有回应") != std::string::npos, "joiner explains a silent host");
+    f.stop();
+  }
+
   // Host shutting down: the joiner notices and waits for it to return.
   host.stop();
   Sleep(300);

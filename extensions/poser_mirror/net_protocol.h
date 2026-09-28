@@ -78,6 +78,17 @@ inline uint8_t Classify(const void *data, int bytes) {
   default: return 0;
   }
 }
+// Hello and Reject keep their layout in every protocol version, so peers on
+// different versions can still tell each other why they cannot connect.
+// Returns the other side's version for such a packet, or 0.
+inline uint16_t ForeignVersion(const void *data, int bytes, uint8_t expectedType) {
+  if (bytes < int(sizeof(Header))) return 0;
+  Header h;
+  memcpy(&h, data, sizeof(h));
+  if (h.magic != kMagic || h.version == kVersion || h.type != expectedType) return 0;
+  const int size = expectedType == Hello ? int(sizeof(HelloPacket)) : int(sizeof(RejectPacket));
+  return bytes == size ? h.version : 0;
+}
 // Same rules the host applies before writing a puppet; checked again here so
 // the host of a session never relays garbage to the others.
 inline bool ValidPose(const PoserHumanPose &p) {
