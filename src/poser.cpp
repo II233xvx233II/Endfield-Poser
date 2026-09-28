@@ -347,6 +347,7 @@ static void DrawPoserGuiBody() {
     // 只在真的装了 XXMI/3DMigoto 时才提示撞键，避免没装的用户被无谓打扰
     if (g_hotkeyConflict && g_xxmiDetected)
       ImGui::TextDisabled("\u26a0 %s", g_hotkeyConflictMsg);
+    DrawModBridgeConflictNotice();
     if (ImGui::CollapsingHeader(u8"快捷键设置")) {
       DrawHotkeySetting(u8"\u547c\u51fa / \u9690\u85cf\u9762\u677f",
                         "gui_toggle_key", &g_guiToggleVK, &g_guiToggleCtrl, 1);
@@ -772,6 +773,7 @@ static DWORD WINAPI InitThread(LPVOID) {
       POSER_VERSION, __DATE__, __TIME__);
   LoadPoserConfig();
   poser_gaze::LoadProfiles();
+  ModBridgeStartup();
   ClothInitializeHost();
   poser_agreement::state.load(PoserFilePath(poser_agreement::kFileName));
   Log("[AGREEMENT] revision %d: %s", poser_agreement::kRevision,

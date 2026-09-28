@@ -48,6 +48,7 @@ if(WIN32)
     src/math/mmd_motion.h src/math/mmd_rig.h src/math/mmd_retarget.h src/math/mmd_props.h src/math/mmd_adaptation.h src/math/mmd_amplitude.h
     src/game/mmd_squad.h src/game/squad.h src/game/smc_actor_state.h src/math/mmd_squad.h src/editor/panel_mmd_squad.h
     src/game/mmd_player.h src/game/mmd_io.h src/game/frozen_grip.h src/editor/panel_mmd.h src/editor/panel_mmd_adaptation.h
+    src/math/mod_bridge.h src/game/mod_bridge.h src/editor/panel_mod_bridge.h
     src/core/game_hooks.h
     src/core/gui_overlay.h src/core/layered_readback.h src/core/overlay_device.h
     src/core/frame_driver.h src/math/frame_cadence.h src/math/hotkey_state.h
@@ -143,6 +144,7 @@ add_poser_test(test_mmd_avatar tests/test_mmd_avatar.cpp)
 add_poser_test(test_mmd_terrain tests/test_mmd_terrain.cpp)
 add_poser_test(test_mmd_camera tests/test_mmd_camera.cpp)
 add_poser_test(test_mmd_transport tests/test_mmd_transport.cpp)
+add_poser_test(test_mod_bridge tests/test_mod_bridge.cpp)
 add_poser_test(test_character_faces tests/test_character_faces.cpp)
 add_poser_test(test_face_mixing tests/test_face_mixing.cpp)
 add_poser_test(test_eye_gaze tests/test_eye_gaze.cpp)
@@ -168,6 +170,7 @@ if(MSVC)
   target_link_libraries(test_runtime_bootstrap PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/deps/minhook_lib/lib/libMinHook.x64.lib)
   add_poser_test(test_plugin_paths tests/test_plugin_paths.cpp)
+  add_poser_test(test_mod_bridge_runtime tests/test_mod_bridge_runtime.cpp)
   add_poser_test(test_layered_readback tests/test_layered_readback.cpp)
   target_link_libraries(test_layered_readback PRIVATE d3d11)
   add_poser_test(test_overlay_device tests/test_overlay_device.cpp)

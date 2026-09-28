@@ -10,6 +10,7 @@
 #include "game/mmd_terrain.h"
 #include "math/mmd_adaptation.h"
 #include "game/mmd_camera.h"
+#include "game/mod_bridge.h"
 #include "game/mmd_camera_settings.h"
 #include "nlohmann/json.hpp"
 #include <atomic>
@@ -659,6 +660,7 @@ static void MmdReport() {
   else if(!s_characterBinding.ready)m.report.push_back(m.faceSettings.fallback?
     u8"专属校准尚未匹配当前骨架，将使用固定映射":u8"专属校准尚未匹配当前骨架，固定映射兜底已关闭");
   for(auto &kv:m.morphMap) {
+    if(ModBridgeUsesMorph(kv.first)){m.report.push_back(u8"用于 mod 联动: "+kv.first);continue;}
     if(kv.second.slider<0) {
       if(kv.second.nativeSlider<0||!m.faceSettings.fallback)m.report.push_back(u8"未映射表情: "+kv.first);
       else m.report.push_back(u8"专属校准未覆盖，使用固定映射: "+kv.first);
@@ -1032,6 +1034,7 @@ static void MmdStop() {
   ClothRequestPlayback(false);
   s_mmdStartRequest.cancel();
   m.audio.close();
+  ModBridgeRelease();
   SMCMotionPublish({});
   poser_gaze::Release(false);
   InterlockedExchange(&g_mmdOwnsPose, 0);
@@ -1161,6 +1164,7 @@ static void MmdApplyFrame() {
     }
   }
   SMCMotionPublish(face);
+  ModBridgeFrame(m.clip, frame);
   MmdPublishCamera();
 }
 static bool MmdClothMayAdjustAnchor(void *transform) {
@@ -1223,6 +1227,7 @@ static void MmdTick() {
     MmdLoadFaceSettings();
     MmdPollCharacterFaces();
     MmdPollLoad();
+    ModBridgeService();
     MmdSelectCameraSettings();
     if(m.calibrateRequested&&ClothOnMainThread()&&!m.session.active&&!MmdSquadBusy()) {
       m.calibrateRequested=false;MmdPrepareProfile();

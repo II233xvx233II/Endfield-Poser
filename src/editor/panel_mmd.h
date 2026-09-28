@@ -2,6 +2,7 @@
 #include "config.h"
 #include "game/mmd_player.h"
 #include "editor/panel_mmd_adaptation.h"
+#include "editor/panel_mod_bridge.h"
 #include "imgui.h"
 
 static void DrawMmdFile(const std::string &path) {
@@ -565,6 +566,7 @@ static void DrawMmdPanel() {
           ImGui::EndDisabled();
         }
         DrawMmdAdaptationPanel();
+        DrawModBridgePanel();
         if (ImGui::CollapsingHeader(u8"诊断与导入报告")) {
           ImGui::TextDisabled(g_frameDiagnostics.gameDriven ? u8"动作更新：跟随游戏帧"
                                                             : u8"动作更新：独立计时（游戏帧回调未触发）");

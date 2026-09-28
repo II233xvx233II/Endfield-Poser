@@ -171,6 +171,8 @@ $tests = @(
   @{ Name = 'test_mmd_camera_runtime'; Src = 'tests\test_mmd_camera_runtime.cpp' },
   @{ Name = 'test_mmd_camera_settings'; Src = 'tests\test_mmd_camera_settings.cpp' },
   @{ Name = 'test_mmd_transport'; Src = 'tests\test_mmd_transport.cpp' },
+  @{ Name = 'test_mod_bridge'; Src = 'tests\test_mod_bridge.cpp' },
+  @{ Name = 'test_mod_bridge_runtime'; Src = 'tests\test_mod_bridge_runtime.cpp' },
   @{ Name = 'test_mmd_audio'; Src = 'tests\test_mmd_audio.cpp' },
   @{ Name = 'test_frame_driver'; Src = 'tests\test_frame_driver.cpp' },
   @{ Name = 'test_mmd_runtime'; Src = 'tests\test_mmd_runtime.cpp' },
