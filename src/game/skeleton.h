@@ -373,7 +373,7 @@ static void *FindBoneByNameInAll(const char *name) {
 static int s_bonesRev = 0; // 骨骼列表版本号（角色切换重建时 +1，Blender 桥接据此自动刷新）
 
 static void CollectAllBonesRecursive(void *t, void *parent, int depth) {
-  if (!t || depth > 64 || s_allBones.size() > 512)
+  if (!t || depth > 64 || s_allBones.size() >= 4096)
     return;
   AllBone b;
   b.transform = t;
@@ -394,7 +394,7 @@ static void CollectAllBonesRecursive(void *t, void *parent, int depth) {
     if (g_transform_get_childCount && g_transform_GetChild) {
       void *boxed = Invoke(g_transform_get_childCount, t);
       int n = boxed ? *(int *)((char *)boxed + 16) : 0;
-      for (int i = 0; i < n && i < 64; i++) {
+      for (int i = 0; i < n && i < 4096 && s_allBones.size() < 4096; i++) {
         int idx = i;
         void *params[] = {&idx};
         void *child = Invoke(g_transform_GetChild, t, params);

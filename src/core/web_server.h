@@ -78,7 +78,7 @@ static void HandleRequest(SOCKET c, const std::string &path,
     int n = snprintf(head, sizeof(head), "HTTP/1.1 403 Forbidden\r\nContent-Type: application/json; charset=utf-8\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: %zu\r\nConnection: close\r\n\r\n", payload.size());
     send(c, head, n, 0); send(c, payload.data(), (int)payload.size(), 0); return;
   }
-  const bool readOnly = path=="/" || path=="/index.html" || path=="/api/status" || path=="/api/mmd/status" || path=="/api/bones" || path=="/api/allbones" || path=="/api/face" || (path=="/api/pose" && body.empty());
+  const bool readOnly = path=="/" || path=="/index.html" || path=="/api/status" || path=="/api/mmd/status" || path=="/api/mmd/squad/status" || path=="/api/bones" || path=="/api/allbones" || path=="/api/face" || (path=="/api/pose" && body.empty());
   if(MmdOwnsPose() && !readOnly) {
     const char* payload="{\"ok\":false,\"err\":\"MMD playback owns the pose; stop playback before editing\"}";
     char head[256];int n=snprintf(head,sizeof(head),"HTTP/1.1 409 Conflict\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: %zu\r\nConnection: close\r\n\r\n",strlen(payload));
@@ -105,6 +105,23 @@ static void HandleRequest(SOCKET c, const std::string &path,
     HttpJson(c, {{"ok", true}, {"bones", ApiBones()}});
     return;
   }
+  if (path == "/api/mmd/squad/status") {
+    auto &s=g_squad;nlohmann::json slots=nlohmann::json::array();
+    for(int i=0;i<4;++i) {
+      auto &slot=s.slots[i];auto *a=s.actors[i].get();
+      slots.push_back({{"slot",i+1},{"enabled",slot.enabled},{"member",slot.member},
+        {"ready",s.roster.members[i].animator!=nullptr},{"file",slot.file},{"status",slot.status},
+        {"calibrated",slot.calibrated},{"calibration",slot.calibration},
+        {"active",a!=nullptr},{"bones",a?a->bones.size():0},
+        {"face_ready",a&&a->face&&a->face->smcOwnershipVerified},
+        {"offset",{slot.offset.x,slot.offset.y,slot.offset.z}}});
+    }
+    HttpJson(c,{{"active",s.active},{"pending",s.pending.active},{"loading",s.loading},
+      {"state",int(s.timeline.state)},{"frame",s.timeline.seconds*30},{"last_frame",s.timeline.duration*30},
+      {"status",s.status},{"roster_status",poser_squad::status},{"roster_valid",s.roster.valid},
+      {"origin",{s.anchor.origin.x,s.anchor.origin.y,s.anchor.origin.z}},{"slots",slots}});
+    return;
+  }
   if (path == "/api/mmd/status") {
     auto &m=g_mmd;
     s_collisionInspect.store(true);
@@ -123,9 +140,13 @@ static void HandleRequest(SOCKET c, const std::string &path,
       {"camera_keys",MmdCameraKeys().size()},{"camera_file",m.cameraFile},
       {"camera_enabled",m.cameraSettings.enabled},{"camera_origin",int(m.cameraSettings.origin)},
       {"camera_offset",{m.cameraSettings.offset.x,m.cameraSettings.offset.y,m.cameraSettings.offset.z}},
-      {"camera_ready",mmd_camera::ready},{"camera_status",mmd_camera::status},
+      {"camera_ready",mmd_camera::ready},{"camera_status",std::string(mmd_camera::status.load())},
       {"camera_callback_age",mmd_camera::lastCallback < 0 ? -1.0 : MmdNow()-mmd_camera::lastCallback},
-      {"camera_applied",mmd_camera::applied},{"camera_restore_pending",!mmd_camera::request.active&&mmd_camera::lease.camera!=nullptr},
+      {"camera_applied",mmd_camera::applied.load()},{"camera_restore_pending",!mmd_camera::desiredActive.load()&&mmd_camera::restorePending.load()},
+      {"camera_sequence",mmd_camera::lastSequence.load()},{"camera_source_frame",mmd_camera::sourceFrame.load()},
+      {"camera_repeated_samples",mmd_camera::repeatedFrames.load()},{"camera_driver_paused",mmd_camera::driverPaused.load()},
+      {"camera_settings",mmd::WriteCameraSettings(m.cameraSettings)},
+      {"hotkey_target",g_mmdSquadBridge.hotkeyTarget&&g_mmdSquadBridge.hotkeyTarget()?"squad":"single"},
       {"in_place",m.inPlace},{"scale",m.scale},{"status",m.status},
       {"cloth_enhancement",{{"enabled",s_clothAutoEnabled.load()},
         {"preparing",enhancement.autoPreparing},{"restoring",enhancement.boneRestoring},
@@ -164,6 +185,7 @@ static void HandleRequest(SOCKET c, const std::string &path,
       {"model",CurrentCharModelKey()},{"file",m.file},{"report",m.report},
       {"hidden_props",m.session.active ? m.session.props.size() : 0},
       {"smc_ready",SMCSectionReady()},{"bone_tracks",m.clip.bones.size()},
+      {"smc_owner_verified",s_smcOwnershipVerified},
       {"native_face_paused",s_smcAutomation.confirmed},
       {"face_mode","character"},{"face_fallback",m.faceSettings.fallback},
       {"face_strength",m.faceSettings.strength},{"face_regions",face_mixing::Write(m.faceSettings)["regions"]},

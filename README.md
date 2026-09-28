@@ -2,15 +2,15 @@
 
 《明日方舟：终末地》的摄影摆姿与 MMD 播放工具。可调整角色姿态、保存姿态、播放动作与表情，并搭配音乐和镜头使用。播放 MMD 无需 Blender。
 
-**当前版本：0.4.60（预发布）**
+**当前版本：0.4.65（预发布）**
 
-[下载安装包](https://github.com/OedoSoldier/Endfield-Poser/releases/tag/v0.4.60) · [快速教程](docs/tutorial.md) · [MMD 播放指南](docs/mmd-player.md) · [问题反馈](https://github.com/OedoSoldier/Endfield-Poser/issues)
+[下载安装包](https://github.com/OedoSoldier/Endfield-Poser/releases/tag/v0.4.65) · [快速教程](docs/tutorial.md) · [MMD 播放指南](docs/mmd-player.md) · [问题反馈](https://github.com/OedoSoldier/Endfield-Poser/issues)
 
 ## 安装、更新与卸载
 
 需要 Windows x64。
 
-1. 在下载页的 **Assets** 中选择 `Endfield-Poser-v0.4.60-win64.zip`。`source.zip` 和 **Source code** 是源码。
+1. 在下载页的 **Assets** 中选择 `Endfield-Poser-v0.4.65-win64.zip`。`source.zip` 和 **Source code** 是源码。
 2. 完全退出游戏，将安装包完整解压到游戏目录之外的文件夹。
 3. 双击 **安全安装.bat**，选择能直接看到 `Endfield.exe` 和 `GameAssembly.dll` 的游戏目录，再选择 **安装或更新**。
 4. 启动游戏，阅读并确认使用协议。进入角色场景后按 **L** 打开面板，需要光标时按住 **Alt**。
@@ -23,6 +23,7 @@
 |---|---|
 | 手工摆姿 | 按 **P** 冻结，选择骨骼并调整，在姿态库保存 |
 | 播放动作 | 勾选 **MMD 播放器**，打开 VMD，完成校准后播放 |
+| 小队同步播放 | 在独立的 **MMD 多人播放器** 按第 1–4 位分配动作，支持一键共用动作，以当前操控角色的起点为共同原点 |
 | 手动调整表情 | 在 **表情** 面板切换 **MMD 模式**，冻结角色后调节中文滑条 |
 | 控制眼睛朝向 | 在 **表情 → 眼睛朝向** 选择手动方向或自动看向镜头 |
 | 调整动作中的表情 | 在 **角色表情与强度** 中选择各部位的映射和强度 |
@@ -34,6 +35,8 @@
 播放快捷键、窗口拖动和姿态保存见[快速教程](docs/tutorial.md)。动作幅度、IK、衣物物理和特殊骨骼适配见[MMD 播放指南](docs/mmd-player.md)。需要在 Blender 中摆姿时，可使用[可选桥接插件](tools/blender/endfield_poser_bridge/README.md)。
 
 当前版本使用角色专属表情校准，替代旧通用模板；缺失时可选择固定映射，并支持各部位独立强度。安装包附带 37 份[角色表情校准](resources/character-faces/)，安装时自动复制，更新时保留用户修改过的校准和个人设置。
+
+本版新增镜头身高适配、切镜方式和角色镜头预设，修复大体积动作导入、切人校准与表情、快捷键控制问题。多人同步及新版镜头仍待完整游戏内验收，详见[更新说明](docs/releases/v0.4.65.md)。
 
 ## 常见问题
 
@@ -59,6 +62,7 @@
 | 姿态库 | `plugin/poses/` |
 | 角色表情校准 | `plugin/mmd/character-faces/` |
 | 身体校准、表情设置、适配预设 | `plugin/mmd/` |
+| 角色与镜头构图预设 | `plugin/mmd/camera-settings.json` |
 | 安装备份 | `plugin/poser-backups/` |
 
 ## 从源码构建

@@ -49,4 +49,15 @@ inline std::vector<uint8_t> ReadFile(const std::filesystem::path &path) {
     throw std::runtime_error("Cannot read MMD file");
   return data;
 }
+inline MotionClip ReadVmdFile(const std::filesystem::path &path) {
+  std::ifstream file(path, std::ios::binary | std::ios::ate);
+  if (!file) throw std::runtime_error(u8"无法打开 VMD 文件");
+  auto length = file.tellg();
+  if (length < 0) throw std::runtime_error(u8"无法读取 VMD 文件大小");
+  if (uint64_t(length) > MaxVmdFileBytes)
+    throw std::runtime_error(u8"VMD 超过 1 GiB，保留此前动作");
+  file.seekg(0);
+  Reader reader(file, size_t(length));
+  return ReadVmd(reader, Decode);
+}
 } // namespace mmd

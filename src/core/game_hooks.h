@@ -325,8 +325,8 @@ static void ResolveEntityOffsets(void *entity) {
   }
 }
 
-// 设置当前角色 Entity → 提取 Animator 存入 g_charAnimator
-static bool SetCharacterEntity(void *entity) {
+// Read an Entity without changing the editor selection (also used by squad playback).
+static bool ReadCharacterRig(void *entity, void **outAnimator, void **outComponent) {
   if (CharacterSwitchInProgress() || !entity)
     return false;
   ResolveEntityOffsets(entity);
@@ -364,6 +364,14 @@ static bool SetCharacterEntity(void *entity) {
         il2cpp_object_get_class(animator) != g_animatorClass ||
         !UnityObjAlive(SafeGetComponentTransform(animator)))
       return false;
+    *outAnimator=animator; *outComponent=cac; return true;
+  } __except(1) {return false;}
+}
+
+static bool SetCharacterEntity(void *entity) {
+  void *animator=nullptr,*cac=nullptr;
+  if(!ReadCharacterRig(entity,&animator,&cac))return false;
+  __try {
     if (animator != g_charAnimator || entity != g_mainCharEntity) {
       if (g_beforeCharacterChange)
         g_beforeCharacterChange(); // Restore using OLD actor handles first.
